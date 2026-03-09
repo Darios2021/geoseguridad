@@ -1,4 +1,4 @@
-import { asyncHandler } from "../../../src/utils/asyncHandler.js";
+import { asyncHandler } from "../../../utils/asyncHandler.js";
 import { getFeatures, getHealth, getLayers } from "../services/geo.service.js";
 
 export const health = asyncHandler(async (req, res) => {

@@ -1,4 +1,4 @@
-import { pool } from "../../../src/config/db.js";
+import { pool } from "../../../config/db.js";
 import { GEO_QUERIES } from "../queries/geo.queries.js";
 
 export async function getLayers() {
