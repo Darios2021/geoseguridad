@@ -1,6 +1,9 @@
 import multer from "multer";
 import { asyncHandler } from "../../../utils/asyncHandler.js";
-import { importKmzToDatabase } from "../services/geo-import.service.js";
+import {
+  importKmzToDatabase,
+  previewKmzImport
+} from "../services/geo-import.service.js";
 import { getFeatures, getHealth, getLayers } from "../services/geo.service.js";
 
 const upload = multer({
@@ -39,21 +42,53 @@ export const listFeatures = asyncHandler(async (req, res) => {
   });
 });
 
-export const importKmz = asyncHandler(async (req, res) => {
+export const importKmzPreview = asyncHandler(async (req, res) => {
   if (!req.file) {
     return res.status(400).json({
       ok: false,
-      message: "Debes enviar un archivo KMZ en el campo 'file'."
+      message: "Debes enviar un archivo KML/KMZ en el campo 'file'."
     });
   }
 
   const replaceExisting =
     String(req.body.replaceExisting ?? "true").toLowerCase() !== "false";
 
+  const importProfile =
+    req.body?.importProfile && String(req.body.importProfile).trim()
+      ? String(req.body.importProfile).trim()
+      : null;
+
+  const result = await previewKmzImport({
+    buffer: req.file.buffer,
+    filename: req.file.originalname,
+    replaceExisting,
+    importProfile
+  });
+
+  return res.json(result);
+});
+
+export const importKmz = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({
+      ok: false,
+      message: "Debes enviar un archivo KML/KMZ en el campo 'file'."
+    });
+  }
+
+  const replaceExisting =
+    String(req.body.replaceExisting ?? "true").toLowerCase() !== "false";
+
+  const importProfile =
+    req.body?.importProfile && String(req.body.importProfile).trim()
+      ? String(req.body.importProfile).trim()
+      : null;
+
   const result = await importKmzToDatabase({
     buffer: req.file.buffer,
     filename: req.file.originalname,
-    replaceExisting
+    replaceExisting,
+    importProfile
   });
 
   return res.json(result);
