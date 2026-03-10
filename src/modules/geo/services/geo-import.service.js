@@ -17,8 +17,98 @@ function textValue(value) {
   return String(value).trim();
 }
 
+function normalizeWhitespace(value) {
+  return String(value || "")
+    .replace(/\u00A0/g, " ")
+    .replace(/\u200B/g, "")
+    .replace(/\u200C/g, "")
+    .replace(/\u200D/g, "")
+    .replace(/\uFEFF/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function normalizeName(value) {
-  return textValue(value)?.replace(/\s+/g, " ").trim() || null;
+  const clean = normalizeWhitespace(textValue(value) || "");
+  return clean || null;
+}
+
+function normalizeDepartmentName(value) {
+  const raw = normalizeName(value);
+  if (!raw) return null;
+
+  const match = raw.match(/departamental\s*(?:n[º°o]\s*)?(\d+)/i);
+  if (!match) return raw.toUpperCase();
+
+  return `DEPARTAMENTAL Nº ${Number(match[1])}`;
+}
+
+function normalizeDependencyName(value) {
+  const raw = normalizeName(value);
+  if (!raw) return null;
+
+  const upper = raw.toUpperCase();
+
+  let match = upper.match(/(?:COMISARIA|COMISARÍA|CRIA|CRÍA)\.?\s*(\d+)/i);
+  if (match) {
+    return `COMISARIA ${String(Number(match[1])).padStart(2, "0")}`;
+  }
+
+  match = upper.match(/SUB\.?\s*(?:COMISARIA|COMISARÍA|CRIA|CRÍA)\.?\s*(.+)$/i);
+  if (match) {
+    return `SUB COMISARIA ${normalizeWhitespace(match[1]).toUpperCase()}`;
+  }
+
+  return upper;
+}
+
+function normalizeJurisdictionName(value, fallbackDependencyName = null) {
+  const raw = normalizeName(value);
+  if (!raw) return fallbackDependencyName || null;
+
+  const normalizedDependency = normalizeDependencyName(raw);
+  if (/^(COMISARIA|SUB COMISARIA)\b/i.test(normalizedDependency || "")) {
+    return normalizedDependency;
+  }
+
+  return normalizeWhitespace(raw).toUpperCase();
+}
+
+function sanitizeCode(name) {
+  const clean = normalizeName(name);
+  if (!clean) return null;
+  return clean.length <= 120 ? clean : clean.slice(0, 120);
+}
+
+function slugify(value) {
+  return normalizeWhitespace(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+}
+
+function buildFeatureCode({
+  layerCode,
+  departmentName,
+  dependencyName,
+  jurisdictionName,
+  name
+}) {
+  const parts = [layerCode];
+
+  if (departmentName) parts.push(departmentName);
+  if (dependencyName) parts.push(dependencyName);
+
+  if (layerCode === "jurisdicciones" && jurisdictionName) {
+    parts.push(jurisdictionName);
+  } else if (name) {
+    parts.push(name);
+  }
+
+  const code = parts.map(slugify).filter(Boolean).join("__");
+  return code.length <= 120 ? code : code.slice(0, 120);
 }
 
 function parseCoordinatePair(pair) {
@@ -45,6 +135,18 @@ function parseCoordinatesList(coordsText) {
     .filter(Boolean);
 }
 
+function ensureClosedRing(coords) {
+  if (!Array.isArray(coords) || coords.length < 3) return coords;
+
+  const first = coords[0];
+  const last = coords[coords.length - 1];
+
+  if (!first || !last) return coords;
+  if (first[0] === last[0] && first[1] === last[1]) return coords;
+
+  return [...coords, first];
+}
+
 function pointGeometryFromPlacemark(placemark) {
   const coords = textValue(placemark?.Point?.coordinates);
   const pair = parseCoordinatePair(coords);
@@ -61,7 +163,7 @@ function polygonGeometryFromPlacemark(placemark) {
     placemark?.Polygon?.outerBoundaryIs?.LinearRing?.coordinates ||
     placemark?.Polygon?.outerBoundaryIs?.coordinates;
 
-  const outerCoords = parseCoordinatesList(textValue(outer));
+  const outerCoords = ensureClosedRing(parseCoordinatesList(textValue(outer)));
   if (outerCoords.length < 4) return null;
 
   const rings = [outerCoords];
@@ -69,8 +171,8 @@ function polygonGeometryFromPlacemark(placemark) {
   const innerBoundaries = asArray(placemark?.Polygon?.innerBoundaryIs);
 
   for (const inner of innerBoundaries) {
-    const innerCoords = parseCoordinatesList(
-      textValue(inner?.LinearRing?.coordinates || inner?.coordinates)
+    const innerCoords = ensureClosedRing(
+      parseCoordinatesList(textValue(inner?.LinearRing?.coordinates || inner?.coordinates))
     );
     if (innerCoords.length >= 4) {
       rings.push(innerCoords);
@@ -109,29 +211,34 @@ function folderNameLooksLikeCameras(name) {
 }
 
 function folderNameLooksLikeDependency(name) {
-  return /(comisaria|comisaría|subcomisaria|subcomisaría|seccional|unidad|dependencia|brigada|departamento)/i.test(
+  return /(comisaria|comisaría|cria|cría|sub\s*comisaria|sub\s*comisaría|sub\s*cria|sub\s*cría|seccional|unidad|dependencia|brigada|departamento)/i.test(
     name || ""
   );
 }
 
-function detectLayerCode({ geometry, folderPath, placemarkName }) {
-  const joinedPath = folderPath.join(" / ");
+function nameLooksLikeQuadrant(name) {
+  return /^cuadrante\s+\d+\s*-\s*\d+$/i.test(normalizeWhitespace(name || ""));
+}
 
-  if (geometry?.type === "Polygon") {
-    return "jurisdicciones";
-  }
+function nameLooksLikeDepartment(name) {
+  return /departamental/i.test(name || "");
+}
 
-  if (geometry?.type === "Point") {
-    if (
-      folderNameLooksLikeCameras(joinedPath) ||
-      /^c\d+/i.test(placemarkName || "")
-    ) {
-      return "camaras";
-    }
-    return "dependencias";
-  }
+function nameLooksLikeCamera(name) {
+  const clean = normalizeWhitespace(name || "");
+  return /^(c\d+|c-\d+|cam\s*\d+|camara\s*\d+)$/i.test(clean);
+}
 
-  return null;
+function inferQuadrantDependencyName(quadrantName) {
+  const clean = normalizeWhitespace(quadrantName || "");
+  const match = clean.match(/^cuadrante\s+(\d+)\s*-\s*\d+$/i);
+  if (!match) return null;
+
+  return `COMISARIA ${String(Number(match[1])).padStart(2, "0")}`;
+}
+
+function placemarkDescription(placemark) {
+  return textValue(placemark?.description) || null;
 }
 
 function extractContext(folderPath) {
@@ -140,12 +247,12 @@ function extractContext(folderPath) {
 
   for (const part of folderPath) {
     if (!departmentName && folderNameLooksLikeDepartment(part)) {
-      departmentName = part;
+      departmentName = normalizeDepartmentName(part);
       continue;
     }
 
     if (!dependencyName && folderNameLooksLikeDependency(part)) {
-      dependencyName = part;
+      dependencyName = normalizeDependencyName(part);
     }
   }
 
@@ -155,28 +262,69 @@ function extractContext(folderPath) {
   };
 }
 
-function sanitizeCode(name) {
-  const clean = normalizeName(name);
-  if (!clean) return null;
-  return clean.length <= 120 ? clean : clean.slice(0, 120);
+function autoDetectImportProfile(filename = "") {
+  const clean = normalizeWhitespace(filename).toLowerCase();
+
+  if (/cuadrante|departamental/.test(clean)) {
+    return "departamentales_cuadrantes";
+  }
+
+  if (/camara|cámara|jurisdic/.test(clean)) {
+    return "operativo";
+  }
+
+  return "operativo";
 }
 
-function placemarkDescription(placemark) {
-  return textValue(placemark?.description) || null;
+function detectLayerCode({ profile, geometry, folderPath, placemarkName }) {
+  const joinedPath = folderPath.join(" / ");
+  const cleanName = normalizeWhitespace(placemarkName || "");
+
+  if (profile === "departamentales_cuadrantes") {
+    if (geometry?.type !== "Polygon") return null;
+
+    if (nameLooksLikeDepartment(cleanName)) {
+      return "departamentales";
+    }
+
+    if (nameLooksLikeQuadrant(cleanName)) {
+      return "cuadrantes";
+    }
+
+    return null;
+  }
+
+  if (profile === "operativo") {
+    if (geometry?.type === "Polygon") {
+      return "jurisdicciones";
+    }
+
+    if (geometry?.type === "Point") {
+      if (folderNameLooksLikeCameras(joinedPath) || nameLooksLikeCamera(cleanName)) {
+        return "camaras";
+      }
+      return "dependencias";
+    }
+
+    return null;
+  }
+
+  return null;
 }
 
-function buildFeatureFromPlacemark(placemark, folderPath) {
+function buildFeatureFromPlacemark(placemark, folderPath, profile) {
   const geometry = getGeometryFromPlacemark(placemark);
   if (!geometry) return null;
 
-  const name = normalizeName(placemark?.name) || "Sin nombre";
+  const rawName = normalizeName(placemark?.name) || "Sin nombre";
   const description = placemarkDescription(placemark);
-  const { departmentName, dependencyName } = extractContext(folderPath);
+  const context = extractContext(folderPath);
 
   const layerCode = detectLayerCode({
+    profile,
     geometry,
     folderPath,
-    placemarkName: name
+    placemarkName: rawName
   });
 
   if (!layerCode) return null;
@@ -184,20 +332,51 @@ function buildFeatureFromPlacemark(placemark, folderPath) {
   const featureTypeMap = {
     camaras: "camera",
     dependencias: "dependency",
-    jurisdicciones: "jurisdiction"
+    jurisdicciones: "jurisdiction",
+    cuadrantes: "quadrant",
+    departamentales: "departmental"
   };
 
+  let name = rawName;
+  let departmentName = context.departmentName;
+  let dependencyName = context.dependencyName;
   let jurisdictionName = null;
 
+  if (layerCode === "departamentales") {
+    name = normalizeDepartmentName(rawName) || rawName;
+    departmentName = normalizeDepartmentName(rawName) || departmentName;
+  }
+
+  if (layerCode === "cuadrantes") {
+    name = normalizeWhitespace(rawName).toUpperCase();
+    dependencyName = inferQuadrantDependencyName(name);
+    jurisdictionName = null;
+  }
+
   if (layerCode === "jurisdicciones") {
-    jurisdictionName = name;
-  } else if (layerCode === "camaras" || layerCode === "dependencias") {
+    name = normalizeWhitespace(rawName).toUpperCase();
+    jurisdictionName = normalizeJurisdictionName(name, dependencyName);
+  }
+
+  if (layerCode === "camaras") {
+    name = normalizeWhitespace(rawName).toUpperCase();
+    jurisdictionName = dependencyName || null;
+  }
+
+  if (layerCode === "dependencias") {
+    dependencyName = dependencyName || normalizeDependencyName(name);
     jurisdictionName = dependencyName || null;
   }
 
   return {
     layerCode,
-    code: sanitizeCode(name),
+    code: buildFeatureCode({
+      layerCode,
+      departmentName,
+      dependencyName,
+      jurisdictionName,
+      name
+    }),
     name,
     description,
     featureType: featureTypeMap[layerCode] || null,
@@ -208,49 +387,57 @@ function buildFeatureFromPlacemark(placemark, folderPath) {
     geometry,
     properties: {
       source_folder_path: folderPath,
-      original_name: name
+      original_name: rawName,
+      normalized_name: name,
+      import_profile: profile
     }
   };
 }
 
-function walkFolder(folder, folderPath = [], out = []) {
+function walkFolder(folder, profile, folderPath = [], out = []) {
   const currentName = normalizeName(folder?.name);
   const nextPath = currentName ? [...folderPath, currentName] : [...folderPath];
 
   for (const placemark of asArray(folder?.Placemark)) {
-    const feature = buildFeatureFromPlacemark(placemark, nextPath);
+    const feature = buildFeatureFromPlacemark(placemark, nextPath, profile);
     if (feature) out.push(feature);
   }
 
   for (const child of asArray(folder?.Folder)) {
-    walkFolder(child, nextPath, out);
+    walkFolder(child, profile, nextPath, out);
   }
 
   for (const childDocument of asArray(folder?.Document)) {
-    walkDocument(childDocument, nextPath, out);
+    walkDocument(childDocument, profile, nextPath, out);
   }
 
   return out;
 }
 
-function walkDocument(documentNode, folderPath = [], out = []) {
+function walkDocument(documentNode, profile, folderPath = [], out = []) {
   for (const placemark of asArray(documentNode?.Placemark)) {
-    const feature = buildFeatureFromPlacemark(placemark, folderPath);
+    const feature = buildFeatureFromPlacemark(placemark, folderPath, profile);
     if (feature) out.push(feature);
   }
 
   for (const folder of asArray(documentNode?.Folder)) {
-    walkFolder(folder, folderPath, out);
+    walkFolder(folder, profile, folderPath, out);
   }
 
   for (const innerDoc of asArray(documentNode?.Document)) {
-    walkDocument(innerDoc, folderPath, out);
+    walkDocument(innerDoc, profile, folderPath, out);
   }
 
   return out;
 }
 
-function extractKmlTextFromKmzBuffer(buffer) {
+function extractKmlTextFromBuffer(buffer, filename = "archivo.kmz") {
+  const lower = String(filename || "").toLowerCase();
+
+  if (lower.endsWith(".kml")) {
+    return buffer.toString("utf8");
+  }
+
   const zip = new AdmZip(buffer);
   const entries = zip.getEntries();
 
@@ -265,8 +452,8 @@ function extractKmlTextFromKmzBuffer(buffer) {
   return docEntry.getData().toString("utf8");
 }
 
-function parseKmzFeatures(buffer) {
-  const kmlText = extractKmlTextFromKmzBuffer(buffer);
+function parseFileFeatures(buffer, filename, profile) {
+  const kmlText = extractKmlTextFromBuffer(buffer, filename);
 
   const parser = new XMLParser({
     ignoreAttributes: false,
@@ -281,7 +468,7 @@ function parseKmzFeatures(buffer) {
     throw new Error("No se pudo interpretar el documento KML.");
   }
 
-  return walkDocument(rootDoc, [], []);
+  return walkDocument(rootDoc, profile, [], []);
 }
 
 function dedupeCodes(features) {
@@ -307,16 +494,96 @@ function dedupeCodes(features) {
   return features;
 }
 
-async function getLayerIds(client) {
-  const { rows } = await client.query(`
-    SELECT id, code
-    FROM geo_layers
-    WHERE code IN ('camaras', 'dependencias', 'jurisdicciones')
-  `);
+function buildDependencyFeaturesFromJurisdictions(features) {
+  const created = [];
+  const seen = new Set();
+
+  for (const feature of features) {
+    if (feature.layerCode !== "jurisdicciones") continue;
+
+    const departmentName = feature.departmentName || null;
+    const dependencyName =
+      feature.dependencyName ||
+      normalizeDependencyName(feature.jurisdictionName) ||
+      normalizeDependencyName(feature.name);
+
+    if (!dependencyName) continue;
+
+    const key = `${departmentName || ""}::${dependencyName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    created.push({
+      layerCode: "dependencias",
+      code: buildFeatureCode({
+        layerCode: "dependencias",
+        departmentName,
+        dependencyName,
+        jurisdictionName: feature.jurisdictionName || dependencyName,
+        name: dependencyName
+      }),
+      name: dependencyName,
+      description: `Punto generado automáticamente desde jurisdicción ${feature.name}`,
+      featureType: "dependency",
+      status: "active",
+      departmentName,
+      dependencyName,
+      jurisdictionName: feature.jurisdictionName || dependencyName,
+      geometry: feature.geometry,
+      geometryFromJurisdiction: true,
+      properties: {
+        source_folder_path: feature.properties?.source_folder_path || [],
+        original_name: dependencyName,
+        normalized_name: dependencyName,
+        generated_from_jurisdiction: true,
+        jurisdiction_source_name: feature.name,
+        import_profile: "operativo"
+      }
+    });
+  }
+
+  return created;
+}
+
+function summarizeFeatures(features) {
+  return features.reduce(
+    (acc, feature) => {
+      if (feature.layerCode === "camaras") acc.camaras += 1;
+      if (feature.layerCode === "dependencias") acc.dependencias += 1;
+      if (feature.layerCode === "jurisdicciones") acc.jurisdicciones += 1;
+      if (feature.layerCode === "cuadrantes") acc.cuadrantes += 1;
+      if (feature.layerCode === "departamentales") acc.departamentales += 1;
+      return acc;
+    },
+    {
+      total: features.length,
+      camaras: 0,
+      dependencias: 0,
+      jurisdicciones: 0,
+      cuadrantes: 0,
+      departamentales: 0
+    }
+  );
+}
+
+async function getLayerIds(client, profile) {
+  const requiredCodes =
+    profile === "departamentales_cuadrantes"
+      ? ["departamentales", "cuadrantes"]
+      : ["camaras", "dependencias", "jurisdicciones"];
+
+  const { rows } = await client.query(
+    `
+      SELECT id, code
+      FROM geo_layers
+      WHERE code = ANY($1::text[])
+    `,
+    [requiredCodes]
+  );
 
   const map = new Map(rows.map((r) => [r.code, r.id]));
 
-  for (const code of ["camaras", "dependencias", "jurisdicciones"]) {
+  for (const code of requiredCodes) {
     if (!map.has(code)) {
       throw new Error(`No existe la capa requerida: ${code}`);
     }
@@ -336,6 +603,63 @@ async function clearImportedLayers(client, layerIds) {
 }
 
 async function insertFeature(client, layerId, feature, sourceFilename) {
+  if (feature.layerCode === "dependencias" && feature.geometryFromJurisdiction) {
+    await client.query(
+      `
+        INSERT INTO geo_features (
+          layer_id,
+          code,
+          name,
+          description,
+          feature_type,
+          status,
+          department_name,
+          dependency_name,
+          jurisdiction_name,
+          geom,
+          properties,
+          source_type,
+          source_reference,
+          external_id,
+          is_active
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          ST_PointOnSurface(ST_SetSRID(ST_GeomFromGeoJSON($10), 4326)),
+          $11::jsonb,
+          'kmz',
+          $12,
+          $13,
+          TRUE
+        )
+      `,
+      [
+        layerId,
+        feature.code,
+        feature.name,
+        feature.description,
+        feature.featureType,
+        feature.status,
+        feature.departmentName,
+        feature.dependencyName,
+        feature.jurisdictionName,
+        JSON.stringify(feature.geometry),
+        JSON.stringify(feature.properties || {}),
+        sourceFilename,
+        null
+      ]
+    );
+    return;
+  }
+
   await client.query(
     `
       INSERT INTO geo_features (
@@ -394,29 +718,43 @@ async function insertFeature(client, layerId, feature, sourceFilename) {
 export async function importKmzToDatabase({
   buffer,
   filename = "archivo.kmz",
-  replaceExisting = true
+  replaceExisting = true,
+  importProfile = null
 }) {
-  let features = parseKmzFeatures(buffer);
+  const profile = importProfile || autoDetectImportProfile(filename);
+
+  let features = parseFileFeatures(buffer, filename, profile);
+
+  if (profile === "operativo") {
+    const generatedDependencies = buildDependencyFeaturesFromJurisdictions(features);
+
+    const existingDependencyKeys = new Set(
+      features
+        .filter((f) => f.layerCode === "dependencias")
+        .map((f) => `${f.departmentName || ""}::${f.dependencyName || ""}`)
+    );
+
+    for (const dep of generatedDependencies) {
+      const key = `${dep.departmentName || ""}::${dep.dependencyName || ""}`;
+      if (!existingDependencyKeys.has(key)) {
+        features.push(dep);
+      }
+    }
+  }
 
   if (!features.length) {
-    throw new Error("El KMZ no contiene features compatibles para importar.");
+    throw new Error("El archivo no contiene features compatibles para importar.");
   }
 
   features = dedupeCodes(features);
 
-  const summary = {
-    total: features.length,
-    camaras: 0,
-    dependencias: 0,
-    jurisdicciones: 0
-  };
-
+  const summary = summarizeFeatures(features);
   const client = await pool.connect();
 
   try {
     await client.query("BEGIN");
 
-    const layerIds = await getLayerIds(client);
+    const layerIds = await getLayerIds(client, profile);
 
     if (replaceExisting) {
       await clearImportedLayers(client, layerIds);
@@ -424,11 +762,8 @@ export async function importKmzToDatabase({
 
     for (const feature of features) {
       const layerId = layerIds.get(feature.layerCode);
+      if (!layerId) continue;
       await insertFeature(client, layerId, feature, filename);
-
-      if (feature.layerCode === "camaras") summary.camaras += 1;
-      if (feature.layerCode === "dependencias") summary.dependencias += 1;
-      if (feature.layerCode === "jurisdicciones") summary.jurisdicciones += 1;
     }
 
     await client.query("COMMIT");
@@ -437,6 +772,7 @@ export async function importKmzToDatabase({
       ok: true,
       filename,
       replaceExisting,
+      importProfile: profile,
       summary
     };
   } catch (error) {
