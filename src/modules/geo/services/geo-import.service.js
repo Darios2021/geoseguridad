@@ -74,12 +74,6 @@ function normalizeJurisdictionName(value, fallbackDependencyName = null) {
   return normalizeWhitespace(raw).toUpperCase();
 }
 
-function sanitizeCode(name) {
-  const clean = normalizeName(name);
-  if (!clean) return null;
-  return clean.length <= 120 ? clean : clean.slice(0, 120);
-}
-
 function slugify(value) {
   return normalizeWhitespace(value || "")
     .normalize("NFD")
@@ -312,6 +306,24 @@ function detectLayerCode({ profile, geometry, folderPath, placemarkName }) {
   return null;
 }
 
+function buildWarnings(feature) {
+  const warnings = [];
+
+  if (!feature.layerCode) warnings.push("Sin layerCode detectado");
+  if (!feature.featureType) warnings.push("Sin featureType detectado");
+  if (!feature.geometry?.type) warnings.push("Sin geometría");
+  if (!feature.departmentName) warnings.push("Sin departamental");
+
+  if (
+    ["camaras", "dependencias", "jurisdicciones"].includes(feature.layerCode) &&
+    !feature.dependencyName
+  ) {
+    warnings.push("Sin dependencia");
+  }
+
+  return warnings;
+}
+
 function buildFeatureFromPlacemark(placemark, folderPath, profile) {
   const geometry = getGeometryFromPlacemark(placemark);
   if (!geometry) return null;
@@ -368,7 +380,7 @@ function buildFeatureFromPlacemark(placemark, folderPath, profile) {
     jurisdictionName = dependencyName || null;
   }
 
-  return {
+  const feature = {
     layerCode,
     code: buildFeatureCode({
       layerCode,
@@ -392,6 +404,9 @@ function buildFeatureFromPlacemark(placemark, folderPath, profile) {
       import_profile: profile
     }
   };
+
+  feature.warnings = buildWarnings(feature);
+  return feature;
 }
 
 function walkFolder(folder, profile, folderPath = [], out = []) {
@@ -484,6 +499,7 @@ function dedupeCodes(features) {
         ...(feature.properties || {}),
         duplicate_code_original: feature.code
       };
+      feature.warnings = [...(feature.warnings || []), "Código duplicado"];
       feature.code = null;
       continue;
     }
@@ -538,7 +554,8 @@ function buildDependencyFeaturesFromJurisdictions(features) {
         generated_from_jurisdiction: true,
         jurisdiction_source_name: feature.name,
         import_profile: "operativo"
-      }
+      },
+      warnings: ["Dependencia generada automáticamente desde jurisdicción"]
     });
   }
 
@@ -564,6 +581,47 @@ function summarizeFeatures(features) {
       departamentales: 0
     }
   );
+}
+
+function buildGlobalWarnings(features) {
+  const warnings = [];
+
+  const missingDepartment = features.filter((f) => !f.departmentName).length;
+  const missingDependency = features.filter(
+    (f) =>
+      ["camaras", "dependencias", "jurisdicciones"].includes(f.layerCode) &&
+      !f.dependencyName
+  ).length;
+  const duplicateCodes = features.filter((f) => !f.code).length;
+
+  if (missingDepartment > 0) {
+    warnings.push(`Se detectaron ${missingDepartment} registros sin departamental.`);
+  }
+
+  if (missingDependency > 0) {
+    warnings.push(`Se detectaron ${missingDependency} registros sin dependencia.`);
+  }
+
+  if (duplicateCodes > 0) {
+    warnings.push(`Se detectaron ${duplicateCodes} registros con código duplicado.`);
+  }
+
+  return warnings;
+}
+
+function buildPreviewRows(features, limit = 200) {
+  return features.slice(0, limit).map((feature, index) => ({
+    index: index + 1,
+    layerCode: feature.layerCode || null,
+    featureType: feature.featureType || null,
+    code: feature.code || null,
+    name: feature.name || null,
+    departmentName: feature.departmentName || null,
+    dependencyName: feature.dependencyName || null,
+    jurisdictionName: feature.jurisdictionName || null,
+    geometryType: feature.geometry?.type || null,
+    warnings: feature.warnings || []
+  }));
 }
 
 async function getLayerIds(client, profile) {
@@ -715,12 +773,7 @@ async function insertFeature(client, layerId, feature, sourceFilename) {
   );
 }
 
-export async function importKmzToDatabase({
-  buffer,
-  filename = "archivo.kmz",
-  replaceExisting = true,
-  importProfile = null
-}) {
+function prepareFeatures({ buffer, filename, importProfile }) {
   const profile = importProfile || autoDetectImportProfile(filename);
 
   let features = parseFileFeatures(buffer, filename, profile);
@@ -747,6 +800,51 @@ export async function importKmzToDatabase({
   }
 
   features = dedupeCodes(features);
+
+  return {
+    profile,
+    features
+  };
+}
+
+export async function previewKmzImport({
+  buffer,
+  filename = "archivo.kmz",
+  replaceExisting = true,
+  importProfile = null
+}) {
+  const { profile, features } = prepareFeatures({
+    buffer,
+    filename,
+    importProfile
+  });
+
+  const summary = summarizeFeatures(features);
+  const warnings = buildGlobalWarnings(features);
+  const preview = buildPreviewRows(features, 200);
+
+  return {
+    ok: true,
+    filename,
+    replaceExisting,
+    importProfile: profile,
+    summary,
+    warnings,
+    preview
+  };
+}
+
+export async function importKmzToDatabase({
+  buffer,
+  filename = "archivo.kmz",
+  replaceExisting = true,
+  importProfile = null
+}) {
+  const { profile, features } = prepareFeatures({
+    buffer,
+    filename,
+    importProfile
+  });
 
   const summary = summarizeFeatures(features);
   const client = await pool.connect();
