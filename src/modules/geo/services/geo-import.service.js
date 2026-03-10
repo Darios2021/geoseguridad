@@ -11,8 +11,8 @@ function textValue(value) {
   if (value === null || value === undefined) return null;
   if (typeof value === "string") return value.trim();
   if (typeof value === "number") return String(value);
-  if (typeof value === "object") {
-    if ("#text" in value) return String(value["#text"]).trim();
+  if (typeof value === "object" && "#text" in value) {
+    return String(value["#text"]).trim();
   }
   return String(value).trim();
 }
@@ -23,22 +23,21 @@ function normalizeName(value) {
 
 function parseCoordinatePair(pair) {
   if (!pair) return null;
+
   const parts = String(pair).trim().split(",");
   if (parts.length < 2) return null;
 
   const lon = Number(parts[0]);
   const lat = Number(parts[1]);
-  const alt = parts[2] !== undefined ? Number(parts[2]) : undefined;
 
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
 
-  return alt !== undefined && Number.isFinite(alt)
-    ? [lon, lat, alt]
-    : [lon, lat];
+  return [lon, lat];
 }
 
 function parseCoordinatesList(coordsText) {
   if (!coordsText) return [];
+
   return String(coordsText)
     .trim()
     .split(/\s+/)
@@ -53,7 +52,7 @@ function pointGeometryFromPlacemark(placemark) {
 
   return {
     type: "Point",
-    coordinates: [pair[0], pair[1]]
+    coordinates: pair
   };
 }
 
@@ -65,9 +64,7 @@ function polygonGeometryFromPlacemark(placemark) {
   const outerCoords = parseCoordinatesList(textValue(outer));
   if (outerCoords.length < 4) return null;
 
-  const rings = [
-    outerCoords.map(([lon, lat]) => [lon, lat])
-  ];
+  const rings = [outerCoords];
 
   const innerBoundaries = asArray(placemark?.Polygon?.innerBoundaryIs);
 
@@ -76,7 +73,7 @@ function polygonGeometryFromPlacemark(placemark) {
       textValue(inner?.LinearRing?.coordinates || inner?.coordinates)
     );
     if (innerCoords.length >= 4) {
-      rings.push(innerCoords.map(([lon, lat]) => [lon, lat]));
+      rings.push(innerCoords);
     }
   }
 
@@ -92,7 +89,7 @@ function linestringGeometryFromPlacemark(placemark) {
 
   return {
     type: "LineString",
-    coordinates: coords.map(([lon, lat]) => [lon, lat])
+    coordinates: coords
   };
 }
 
@@ -112,7 +109,9 @@ function folderNameLooksLikeCameras(name) {
 }
 
 function folderNameLooksLikeDependency(name) {
-  return /(comisaria|comisaría|subcomisaria|subcomisaría|seccional|unidad|dependencia|brigada|departamento)/i.test(name || "");
+  return /(comisaria|comisaría|subcomisaria|subcomisaría|seccional|unidad|dependencia|brigada|departamento)/i.test(
+    name || ""
+  );
 }
 
 function detectLayerCode({ geometry, folderPath, placemarkName }) {
@@ -138,16 +137,10 @@ function detectLayerCode({ geometry, folderPath, placemarkName }) {
 function extractContext(folderPath) {
   let departmentName = null;
   let dependencyName = null;
-  let insideCamerasFolder = false;
 
   for (const part of folderPath) {
     if (!departmentName && folderNameLooksLikeDepartment(part)) {
       departmentName = part;
-      continue;
-    }
-
-    if (folderNameLooksLikeCameras(part)) {
-      insideCamerasFolder = true;
       continue;
     }
 
@@ -158,8 +151,7 @@ function extractContext(folderPath) {
 
   return {
     departmentName,
-    dependencyName,
-    insideCamerasFolder
+    dependencyName
   };
 }
 
@@ -289,7 +281,28 @@ function parseKmzFeatures(buffer) {
     throw new Error("No se pudo interpretar el documento KML.");
   }
 
-  const features = walkDocument(rootDoc, [], []);
+  return walkDocument(rootDoc, [], []);
+}
+
+function dedupeCodes(features) {
+  const seen = new Set();
+
+  for (const feature of features) {
+    const key = `${feature.layerCode}::${feature.code || ""}`;
+
+    if (!feature.code) continue;
+
+    if (seen.has(key)) {
+      feature.properties = {
+        ...(feature.properties || {}),
+        duplicate_code_original: feature.code
+      };
+      feature.code = null;
+      continue;
+    }
+
+    seen.add(key);
+  }
 
   return features;
 }
@@ -383,11 +396,13 @@ export async function importKmzToDatabase({
   filename = "archivo.kmz",
   replaceExisting = true
 }) {
-  const features = parseKmzFeatures(buffer);
+  let features = parseKmzFeatures(buffer);
 
   if (!features.length) {
     throw new Error("El KMZ no contiene features compatibles para importar.");
   }
+
+  features = dedupeCodes(features);
 
   const summary = {
     total: features.length,
