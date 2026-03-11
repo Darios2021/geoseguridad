@@ -86,15 +86,12 @@ export async function getGeoTree(filters = {}) {
     SELECT
       f.id,
       l.code AS layer_code,
-      l.name AS layer_name,
       f.code,
       f.name,
       f.department_name,
       f.dependency_name,
       f.jurisdiction_name,
-      f.feature_type,
-      f.status,
-      f.properties
+      f.feature_type
     FROM geo_features f
     INNER JOIN geo_layers l ON l.id = f.layer_id
     WHERE f.is_active = TRUE
@@ -107,206 +104,173 @@ export async function getGeoTree(filters = {}) {
       f.name ASC
   `;
 
-  const result = await pool.query(sql, values);
-  const rows = result.rows;
+  const { rows } = await pool.query(sql, values);
 
-  const departmentMap = new Map();
+  const departments = new Map();
+
+  function makeFeature(row, fallbackName) {
+    return {
+      id: row.id,
+      layerCode: row.layer_code,
+      name: row.name || row.code || fallbackName || row.id,
+      code: row.code,
+      featureType: row.feature_type
+    };
+  }
 
   function ensureDepartment(name) {
     const key = String(name || "SIN DEPARTAMENTAL").trim();
 
-    if (!departmentMap.has(key)) {
-      departmentMap.set(key, {
+    if (!departments.has(key)) {
+      departments.set(key, {
         id: `department:${key}`,
         type: "department",
         name: key,
-        counts: {
-          dependencias: 0,
-          jurisdicciones: 0,
-          cuadrantes: 0,
-          camaras: 0
-        },
-        childrenMap: new Map()
+        feature: null,
+        dependencyMap: new Map()
       });
     }
 
-    return departmentMap.get(key);
+    return departments.get(key);
   }
 
   function ensureDependency(departmentNode, name) {
     const key = String(name || "SIN DEPENDENCIA").trim();
 
-    if (!departmentNode.childrenMap.has(key)) {
-      departmentNode.childrenMap.set(key, {
+    if (!departmentNode.dependencyMap.has(key)) {
+      departmentNode.dependencyMap.set(key, {
         id: `dependency:${departmentNode.name}:${key}`,
         type: "dependency",
         name: key,
-        counts: {
-          jurisdicciones: 0,
-          cuadrantes: 0,
-          camaras: 0
-        },
-        childrenMap: new Map(),
-        cameraChildren: []
+        feature: null,
+        jurisdictionMap: new Map()
       });
     }
 
-    return departmentNode.childrenMap.get(key);
+    return departmentNode.dependencyMap.get(key);
   }
 
-  function ensureJurisdiction(dependencyNode, name) {
-    const key = String(name || dependencyNode.name || "SIN JURISDICCION").trim();
+  function ensureJurisdiction(dependencyNode, rawName) {
+    const raw = String(rawName || "").trim();
+    const key = raw || "JURISDICCIÓN";
 
-    if (!dependencyNode.childrenMap.has(key)) {
-      dependencyNode.childrenMap.set(key, {
+    if (!dependencyNode.jurisdictionMap.has(key)) {
+      const displayName =
+        !raw || raw === dependencyNode.name ? "Jurisdicción" : raw;
+
+      dependencyNode.jurisdictionMap.set(key, {
         id: `jurisdiction:${dependencyNode.id}:${key}`,
         type: "jurisdiction",
-        name: key,
-        counts: {
-          cuadrantes: 0,
-          camaras: 0
-        },
-        quadrantChildren: [],
-        cameraChildren: []
+        name: displayName,
+        feature: null,
+        groupsMap: new Map()
       });
     }
 
-    return dependencyNode.childrenMap.get(key);
+    return dependencyNode.jurisdictionMap.get(key);
   }
 
-  function pushUniqueById(list, item) {
-    if (!list.some((entry) => entry.id === item.id)) {
-      list.push(item);
+  function ensureGroup(jurisdictionNode, groupKind) {
+    const key = groupKind;
+    const groupName = groupKind === "camaras" ? "Cámaras" : "Cuadrantes";
+
+    if (!jurisdictionNode.groupsMap.has(key)) {
+      jurisdictionNode.groupsMap.set(key, {
+        id: `${jurisdictionNode.id}:group:${key}`,
+        type: "group",
+        name: groupName,
+        groupKind,
+        children: []
+      });
     }
+
+    return jurisdictionNode.groupsMap.get(key);
   }
 
   for (const row of rows) {
     const layerCode = row.layer_code;
-    const featureName = row.name || row.code || row.id;
     const departmentName = row.department_name || "SIN DEPARTAMENTAL";
     const dependencyName =
-      row.dependency_name ||
-      row.jurisdiction_name ||
-      "SIN DEPENDENCIA";
+      row.dependency_name || row.jurisdiction_name || "SIN DEPENDENCIA";
     const jurisdictionName =
-      row.jurisdiction_name ||
-      row.dependency_name ||
-      dependencyName;
+      row.jurisdiction_name || dependencyName || "JURISDICCIÓN";
 
     const departmentNode = ensureDepartment(departmentName);
     const dependencyNode = ensureDependency(departmentNode, dependencyName);
 
-    if (layerCode === "dependencias") {
-      departmentNode.counts.dependencias += 1;
+    if (layerCode === "departamentales") {
+      departmentNode.feature = makeFeature(row, departmentNode.name);
+      continue;
     }
 
+    if (layerCode === "dependencias") {
+      dependencyNode.feature = makeFeature(row, dependencyNode.name);
+      continue;
+    }
+
+    const jurisdictionNode = ensureJurisdiction(
+      dependencyNode,
+      jurisdictionName
+    );
+
     if (layerCode === "jurisdicciones") {
-      const jurisdictionNode = ensureJurisdiction(
-        dependencyNode,
-        jurisdictionName
-      );
-
-      departmentNode.counts.jurisdicciones += 1;
-      dependencyNode.counts.jurisdicciones += 1;
-
-      jurisdictionNode.feature = {
-        id: row.id,
-        layerCode,
-        name: featureName,
-        code: row.code,
-        featureType: row.feature_type
-      };
-
+      jurisdictionNode.feature = makeFeature(row, jurisdictionNode.name);
       continue;
     }
 
     if (layerCode === "cuadrantes") {
-      const jurisdictionNode = ensureJurisdiction(
-        dependencyNode,
-        jurisdictionName
-      );
-
-      const quadrantItem = {
+      const groupNode = ensureGroup(jurisdictionNode, "cuadrantes");
+      groupNode.children.push({
         id: `quadrant:${row.id}`,
         type: "quadrant",
-        name: featureName,
-        feature: {
-          id: row.id,
-          layerCode,
-          name: featureName,
-          code: row.code,
-          featureType: row.feature_type
-        }
-      };
-
-      departmentNode.counts.cuadrantes += 1;
-      dependencyNode.counts.cuadrantes += 1;
-      jurisdictionNode.counts.cuadrantes += 1;
-
-      pushUniqueById(jurisdictionNode.quadrantChildren, quadrantItem);
+        name: row.name,
+        feature: makeFeature(row, row.name)
+      });
       continue;
     }
 
     if (layerCode === "camaras") {
-      const jurisdictionNode = ensureJurisdiction(
-        dependencyNode,
-        jurisdictionName
-      );
-
-      const cameraItem = {
+      const groupNode = ensureGroup(jurisdictionNode, "camaras");
+      groupNode.children.push({
         id: `camera:${row.id}`,
         type: "camera",
-        name: featureName,
-        feature: {
-          id: row.id,
-          layerCode,
-          name: featureName,
-          code: row.code,
-          featureType: row.feature_type
-        }
-      };
-
-      departmentNode.counts.camaras += 1;
-      dependencyNode.counts.camaras += 1;
-      jurisdictionNode.counts.camaras += 1;
-
-      pushUniqueById(jurisdictionNode.cameraChildren, cameraItem);
-      continue;
-    }
-
-    if (layerCode === "departamentales") {
-      departmentNode.feature = {
-        id: row.id,
-        layerCode,
-        name: featureName,
-        code: row.code,
-        featureType: row.feature_type
-      };
+        name: row.name,
+        feature: makeFeature(row, row.name)
+      });
     }
   }
 
-  const tree = [...departmentMap.values()].map((departmentNode) => {
-    const dependencies = [...departmentNode.childrenMap.values()].map(
+  const tree = [...departments.values()].map((departmentNode) => {
+    const dependencies = [...departmentNode.dependencyMap.values()].map(
       (dependencyNode) => {
-        const jurisdictions = [...dependencyNode.childrenMap.values()].map(
-          (jurisdictionNode) => ({
-            id: jurisdictionNode.id,
-            type: jurisdictionNode.type,
-            name: jurisdictionNode.name,
-            counts: jurisdictionNode.counts,
-            feature: jurisdictionNode.feature || null,
-            children: [
-              ...jurisdictionNode.quadrantChildren,
-              ...jurisdictionNode.cameraChildren
-            ].sort((a, b) => String(a.name).localeCompare(String(b.name)))
-          })
+        const jurisdictions = [...dependencyNode.jurisdictionMap.values()].map(
+          (jurisdictionNode) => {
+            const groups = [...jurisdictionNode.groupsMap.values()]
+              .map((groupNode) => ({
+                id: groupNode.id,
+                type: groupNode.type,
+                name: groupNode.name,
+                groupKind: groupNode.groupKind,
+                children: [...groupNode.children].sort((a, b) =>
+                  String(a.name).localeCompare(String(b.name))
+                )
+              }))
+              .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+            return {
+              id: jurisdictionNode.id,
+              type: jurisdictionNode.type,
+              name: jurisdictionNode.name,
+              feature: jurisdictionNode.feature || null,
+              children: groups
+            };
+          }
         );
 
         return {
           id: dependencyNode.id,
           type: dependencyNode.type,
           name: dependencyNode.name,
-          counts: dependencyNode.counts,
           feature: dependencyNode.feature || null,
           children: jurisdictions.sort((a, b) =>
             String(a.name).localeCompare(String(b.name))
@@ -319,7 +283,6 @@ export async function getGeoTree(filters = {}) {
       id: departmentNode.id,
       type: departmentNode.type,
       name: departmentNode.name,
-      counts: departmentNode.counts,
       feature: departmentNode.feature || null,
       children: dependencies.sort((a, b) =>
         String(a.name).localeCompare(String(b.name))
