@@ -36,6 +36,41 @@ function buildStandardFeature(row) {
   };
 }
 
+function normalizeText(value) {
+  return String(value ?? "").trim();
+}
+
+function extractDependencyNumber(value) {
+  const text = normalizeText(value).toUpperCase();
+  if (!text) return null;
+
+  const match = text.match(/\b(\d{1,3})\b/);
+  if (!match) return null;
+
+  return String(Number(match[1]));
+}
+
+function extractQuadrantPrefix(value) {
+  const text = normalizeText(value).toUpperCase();
+  if (!text) return null;
+
+  const match = text.match(/(?:CUADRANTE\s*)?(\d{1,3})\s*-\s*\d{1,3}/i);
+  if (!match) return null;
+
+  return String(Number(match[1]));
+}
+
+function quadrantMatchesDependency(quadrantName, dependencyName) {
+  const dependencyNumber = extractDependencyNumber(dependencyName);
+  const quadrantPrefix = extractQuadrantPrefix(quadrantName);
+
+  if (!dependencyNumber || !quadrantPrefix) {
+    return true;
+  }
+
+  return dependencyNumber === quadrantPrefix;
+}
+
 async function getCameraFeatures(filters = {}) {
   const values = [];
   const where = [];
@@ -566,27 +601,34 @@ function buildStructuralTree(structuralRows, cameraRows) {
     }
 
     if (row.quadrant_name) {
-      const existsQuadrant = dependencyNode.quadrantGroup.children.some(
-        (item) =>
-          String(item.name || "").trim().toUpperCase() ===
-          String(row.quadrant_name || "").trim().toUpperCase()
+      const quadrantIsValidForDependency = quadrantMatchesDependency(
+        row.quadrant_name,
+        dependencyNode.name
       );
 
-      if (!existsQuadrant) {
-        dependencyNode.quadrantGroup.children.push({
-          id: `quadrant:virtual:${dependencyNode.id}:${row.quadrant_code || row.quadrant_name}`,
-          type: "quadrant",
-          name: row.quadrant_name,
-          feature: row.quadrant_code
-            ? {
-                id: `virtual-quadrant-${row.quadrant_code}`,
-                layerCode: "cuadrantes",
-                name: row.quadrant_name,
-                code: row.quadrant_code,
-                featureType: "quadrant"
-              }
-            : null
-        });
+      if (quadrantIsValidForDependency) {
+        const existsQuadrant = dependencyNode.quadrantGroup.children.some(
+          (item) =>
+            String(item.name || "").trim().toUpperCase() ===
+            String(row.quadrant_name || "").trim().toUpperCase()
+        );
+
+        if (!existsQuadrant) {
+          dependencyNode.quadrantGroup.children.push({
+            id: `quadrant:virtual:${dependencyNode.id}:${row.quadrant_code || row.quadrant_name}`,
+            type: "quadrant",
+            name: row.quadrant_name,
+            feature: row.quadrant_code
+              ? {
+                  id: `virtual-quadrant-${row.quadrant_code}`,
+                  layerCode: "cuadrantes",
+                  name: row.quadrant_name,
+                  code: row.quadrant_code,
+                  featureType: "quadrant"
+                }
+              : null
+          });
+        }
       }
     }
 
