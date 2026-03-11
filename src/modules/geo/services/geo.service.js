@@ -36,12 +36,7 @@ function buildStandardFeature(row) {
   };
 }
 
-/* ============================================================
-   CAMERAS FROM geo_camera_catalog
-============================================================ */
-
 async function getCameraFeatures(filters = {}) {
-
   const values = [];
   const where = [];
   let idx = 1;
@@ -49,209 +44,256 @@ async function getCameraFeatures(filters = {}) {
   where.push(`gcc.latitude IS NOT NULL`);
   where.push(`gcc.longitude IS NOT NULL`);
 
+  if (filters.department) {
+    where.push(`
+      COALESCE(
+        dep_poly_rel.department_name,
+        jur_rel.department_name,
+        quad_rel.department_name,
+        dep_rel.department_name,
+        gcc.department_catalog,
+        'SIN DEPARTAMENTAL'
+      ) = $${idx++}
+    `);
+    values.push(filters.department);
+  }
+
+  if (filters.dependency) {
+    where.push(`
+      COALESCE(
+        dep_rel.dependency_name,
+        jur_rel.dependency_name,
+        quad_rel.dependency_name,
+        'SIN DEPENDENCIA'
+      ) = $${idx++}
+    `);
+    values.push(filters.dependency);
+  }
+
   if (filters.status) {
-
-    if (filters.status === "active")
+    if (String(filters.status).toLowerCase() === "active") {
       where.push(`gcc.is_active = TRUE`);
-
-    else if (filters.status === "inactive")
+    } else if (String(filters.status).toLowerCase() === "inactive") {
       where.push(`gcc.is_active = FALSE`);
+    } else {
+      where.push(`
+        CASE
+          WHEN gcc.is_active THEN 'active'
+          ELSE 'inactive'
+        END = $${idx++}
+      `);
+      values.push(filters.status);
+    }
   }
 
   const limit = Math.min(Number(filters.limit || 1000), 10000);
   values.push(limit);
 
   const sql = `
-  SELECT
-    gcc.id,
-    gl.id AS layer_id,
-    gl.code AS layer_code,
-    gl.name AS layer_name,
+    SELECT
+      gcc.id,
+      gl.id AS layer_id,
+      gl.code AS layer_code,
+      gl.name AS layer_name,
+      gcc.camera_code AS code,
+      gcc.camera_code AS name,
+      gcc.description,
+      'camera' AS feature_type,
+      CASE
+        WHEN gcc.is_active THEN 'active'
+        ELSE 'inactive'
+      END AS status,
+      NULL::integer AS priority,
 
-    gcc.camera_code AS code,
-    gcc.camera_code AS name,
-    gcc.description,
+      COALESCE(
+        dep_poly_rel.department_name,
+        jur_rel.department_name,
+        quad_rel.department_name,
+        dep_rel.department_name,
+        gcc.department_catalog,
+        'SIN DEPARTAMENTAL'
+      ) AS department_name,
 
-    'camera' AS feature_type,
+      COALESCE(
+        dep_rel.dependency_name,
+        jur_rel.dependency_name,
+        quad_rel.dependency_name,
+        'SIN DEPENDENCIA'
+      ) AS dependency_name,
 
-    CASE
-      WHEN gcc.is_active THEN 'active'
-      ELSE 'inactive'
-    END AS status,
+      COALESCE(
+        jur_rel.jurisdiction_name,
+        quad_rel.jurisdiction_name,
+        dep_rel.jurisdiction_name,
+        'SIN JURISDICCIÓN'
+      ) AS jurisdiction_name,
 
-    NULL::integer AS priority,
+      ST_AsGeoJSON(
+        ST_SetSRID(
+          ST_MakePoint(
+            gcc.longitude::double precision,
+            gcc.latitude::double precision
+          ),
+          4326
+        )
+      )::json AS geometry,
 
-    /* ======================================
-       DEPARTAMENTAL RESUELTA POR GEOMETRIA
-    ====================================== */
-
-    COALESCE(
-      dep_poly.name,
-      jur_rel.department_name,
-      quad_rel.department_name,
-      dep_rel.department_name,
-      gcc.department_catalog,
-      'SIN DEPARTAMENTAL'
-    ) AS department_name,
-
-    COALESCE(
-      dep_rel.dependency_name,
-      jur_rel.dependency_name,
-      quad_rel.dependency_name,
-      'SIN DEPENDENCIA'
-    ) AS dependency_name,
-
-    COALESCE(
-      jur_rel.jurisdiction_name,
-      quad_rel.jurisdiction_name,
-      'SIN JURISDICCIÓN'
-    ) AS jurisdiction_name,
-
-    ST_AsGeoJSON(
-      ST_SetSRID(
-        ST_MakePoint(
-          gcc.longitude::double precision,
-          gcc.latitude::double precision
+      jsonb_build_object(
+        'camera_catalog_id', gcc.id,
+        'camera_catalog_code', gcc.camera_code,
+        'camera_location_text', gcc.location_text,
+        'camera_description', gcc.description,
+        'camera_department_catalog', gcc.department_catalog,
+        'camera_status_catalog', gcc.status_catalog,
+        'camera_type', gcc.camera_type,
+        'camera_latitude_catalog', gcc.latitude,
+        'camera_longitude_catalog', gcc.longitude,
+        'camera_active', gcc.is_active,
+        'camera_catalog_source', gcc.source_reference,
+        'quadrant_name', quad_rel.quadrant_name,
+        'quadrant_code', quad_rel.quadrant_code,
+        'departmental_name', COALESCE(
+          dep_poly_rel.department_name,
+          jur_rel.department_name,
+          quad_rel.department_name,
+          dep_rel.department_name,
+          gcc.department_catalog,
+          'SIN DEPARTAMENTAL'
         ),
-        4326
-      )
-    )::json AS geometry,
+        'departmental_code', dep_poly_rel.departmental_code,
+        'jurisdiction_code', jur_rel.jurisdiction_code,
+        'dependency_code', dep_rel.dependency_code,
+        'matched_by', COALESCE(
+          dep_poly_rel.matched_by,
+          jur_rel.matched_by,
+          quad_rel.matched_by,
+          dep_rel.matched_by,
+          'catalog_only'
+        ),
+        'raw_payload', gcc.raw_payload
+      ) AS properties,
 
-    jsonb_build_object(
-      'camera_catalog_id', gcc.id,
-      'camera_catalog_code', gcc.camera_code,
-      'camera_location_text', gcc.location_text,
-      'camera_description', gcc.description,
-      'camera_department_catalog', gcc.department_catalog,
-      'camera_status_catalog', gcc.status_catalog,
-      'camera_type', gcc.camera_type,
-      'camera_latitude_catalog', gcc.latitude,
-      'camera_longitude_catalog', gcc.longitude,
-      'camera_active', gcc.is_active,
-      'camera_catalog_source', gcc.source_reference,
-      'quadrant_name', quad_rel.quadrant_name,
-      'quadrant_code', quad_rel.quadrant_code,
-      'matched_by', COALESCE(
-        dep_poly.matched_by,
-        jur_rel.matched_by,
-        quad_rel.matched_by,
-        dep_rel.matched_by,
-        'catalog_only'
-      ),
-      'raw_payload', gcc.raw_payload
-    ) AS properties,
+      'camera_catalog' AS source_type,
+      gcc.source_reference AS source_reference,
+      gcc.id AS external_id,
+      gcc.is_active,
+      gcc.created_at,
+      gcc.updated_at
 
-    'camera_catalog' AS source_type,
-    gcc.source_reference,
-    gcc.id AS external_id,
-    gcc.is_active,
-    gcc.created_at,
-    gcc.updated_at
+    FROM geo_camera_catalog gcc
+    INNER JOIN geo_layers gl
+      ON gl.code = 'camaras'
+     AND gl.is_active = TRUE
 
-  FROM geo_camera_catalog gcc
+    LEFT JOIN LATERAL (
+      SELECT
+        f.name AS department_name,
+        f.code AS departmental_code,
+        'spatial_departmental'::text AS matched_by
+      FROM geo_features f
+      INNER JOIN geo_layers l ON l.id = f.layer_id
+      WHERE f.is_active = TRUE
+        AND l.code = 'departamentales'
+        AND ST_Intersects(
+          f.geom,
+          ST_SetSRID(
+            ST_MakePoint(
+              gcc.longitude::double precision,
+              gcc.latitude::double precision
+            ),
+            4326
+          )
+        )
+      ORDER BY f.name ASC
+      LIMIT 1
+    ) dep_poly_rel ON TRUE
 
-  INNER JOIN geo_layers gl
-    ON gl.code = 'camaras'
-   AND gl.is_active = TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        f.department_name,
+        f.dependency_name,
+        f.jurisdiction_name,
+        f.code AS dependency_code,
+        'spatial_dependency'::text AS matched_by
+      FROM geo_features f
+      INNER JOIN geo_layers l ON l.id = f.layer_id
+      WHERE f.is_active = TRUE
+        AND l.code = 'dependencias'
+        AND ST_Intersects(
+          f.geom,
+          ST_SetSRID(
+            ST_MakePoint(
+              gcc.longitude::double precision,
+              gcc.latitude::double precision
+            ),
+            4326
+          )
+        )
+      ORDER BY ST_Area(ST_Envelope(f.geom)) ASC NULLS LAST, f.name ASC
+      LIMIT 1
+    ) dep_rel ON TRUE
 
-  /* ===============================
-     DEPARTAMENTAL POLICIAL
-  =============================== */
+    LEFT JOIN LATERAL (
+      SELECT
+        f.department_name,
+        f.dependency_name,
+        f.jurisdiction_name,
+        f.code AS jurisdiction_code,
+        'spatial_jurisdiction'::text AS matched_by
+      FROM geo_features f
+      INNER JOIN geo_layers l ON l.id = f.layer_id
+      WHERE f.is_active = TRUE
+        AND l.code = 'jurisdicciones'
+        AND ST_Intersects(
+          f.geom,
+          ST_SetSRID(
+            ST_MakePoint(
+              gcc.longitude::double precision,
+              gcc.latitude::double precision
+            ),
+            4326
+          )
+        )
+      ORDER BY ST_Area(ST_Envelope(f.geom)) ASC NULLS LAST, f.name ASC
+      LIMIT 1
+    ) jur_rel ON TRUE
 
-  LEFT JOIN LATERAL (
-    SELECT
-      f.name,
-      'spatial_departmental' AS matched_by
-    FROM geo_features f
-    JOIN geo_layers l ON l.id = f.layer_id
-    WHERE l.code = 'departamentales'
-      AND ST_Intersects(
-        f.geom,
-        ST_SetSRID(ST_MakePoint(gcc.longitude, gcc.latitude),4326)
-      )
-    LIMIT 1
-  ) dep_poly ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        f.name AS quadrant_name,
+        f.code AS quadrant_code,
+        f.department_name,
+        f.dependency_name,
+        f.jurisdiction_name,
+        'spatial_quadrant'::text AS matched_by
+      FROM geo_features f
+      INNER JOIN geo_layers l ON l.id = f.layer_id
+      WHERE f.is_active = TRUE
+        AND l.code = 'cuadrantes'
+        AND ST_Intersects(
+          f.geom,
+          ST_SetSRID(
+            ST_MakePoint(
+              gcc.longitude::double precision,
+              gcc.latitude::double precision
+            ),
+            4326
+          )
+        )
+      ORDER BY f.name ASC
+      LIMIT 1
+    ) quad_rel ON TRUE
 
-  /* ===============================
-     DEPENDENCIA
-  =============================== */
-
-  LEFT JOIN LATERAL (
-    SELECT
-      f.department_name,
-      f.dependency_name,
-      f.jurisdiction_name,
-      'spatial_dependency' AS matched_by
-    FROM geo_features f
-    JOIN geo_layers l ON l.id = f.layer_id
-    WHERE l.code = 'dependencias'
-      AND ST_Intersects(
-        f.geom,
-        ST_SetSRID(ST_MakePoint(gcc.longitude, gcc.latitude),4326)
-      )
-    LIMIT 1
-  ) dep_rel ON TRUE
-
-  /* ===============================
-     JURISDICCION
-  =============================== */
-
-  LEFT JOIN LATERAL (
-    SELECT
-      f.department_name,
-      f.dependency_name,
-      f.jurisdiction_name,
-      'spatial_jurisdiction' AS matched_by
-    FROM geo_features f
-    JOIN geo_layers l ON l.id = f.layer_id
-    WHERE l.code = 'jurisdicciones'
-      AND ST_Intersects(
-        f.geom,
-        ST_SetSRID(ST_MakePoint(gcc.longitude, gcc.latitude),4326)
-      )
-    LIMIT 1
-  ) jur_rel ON TRUE
-
-  /* ===============================
-     CUADRANTE
-  =============================== */
-
-  LEFT JOIN LATERAL (
-    SELECT
-      f.name AS quadrant_name,
-      f.code AS quadrant_code,
-      f.department_name,
-      f.dependency_name,
-      f.jurisdiction_name,
-      'spatial_quadrant' AS matched_by
-    FROM geo_features f
-    JOIN geo_layers l ON l.id = f.layer_id
-    WHERE l.code = 'cuadrantes'
-      AND ST_Intersects(
-        f.geom,
-        ST_SetSRID(ST_MakePoint(gcc.longitude, gcc.latitude),4326)
-      )
-    LIMIT 1
-  ) quad_rel ON TRUE
-
-  WHERE ${where.join(" AND ")}
-
-  ORDER BY gcc.camera_code ASC
-
-  LIMIT $${idx}
+    WHERE ${where.join(" AND ")}
+    ORDER BY gcc.camera_code ASC
+    LIMIT $${idx}
   `;
 
   const result = await pool.query(sql, values);
-
   return result.rows.map(buildStandardFeature);
 }
 
-/* ============================================================
-   STRUCTURAL FEATURES
-============================================================ */
-
 async function getStructuralFeatures(filters = {}) {
-
   const values = [];
   let where = "";
   let idx = 1;
@@ -259,6 +301,21 @@ async function getStructuralFeatures(filters = {}) {
   if (filters.layer) {
     where += ` AND l.code = $${idx++}`;
     values.push(filters.layer);
+  }
+
+  if (filters.department) {
+    where += ` AND f.department_name = $${idx++}`;
+    values.push(filters.department);
+  }
+
+  if (filters.dependency) {
+    where += ` AND f.dependency_name = $${idx++}`;
+    values.push(filters.dependency);
+  }
+
+  if (filters.status) {
+    where += ` AND f.status = $${idx++}`;
+    values.push(filters.status);
   }
 
   const limit = Math.min(Number(filters.limit || 1000), 5000);
@@ -272,113 +329,298 @@ async function getStructuralFeatures(filters = {}) {
   `;
 
   const result = await pool.query(sql, values);
-
   return result.rows.map(buildStandardFeature);
 }
 
 export async function getFeatures(filters = {}) {
-
-  if (filters.layer === "camaras")
+  if (filters.layer === "camaras") {
     return getCameraFeatures(filters);
+  }
 
   return getStructuralFeatures(filters);
 }
 
-/* ============================================================
-   TREE
-============================================================ */
+async function getTreeStructuralRows(filters = {}) {
+  const values = [];
+  let where = "";
+  let idx = 1;
+
+  if (filters.status) {
+    where += ` AND f.status = $${idx++}`;
+    values.push(filters.status);
+  }
+
+  const sql = `
+    SELECT
+      f.id,
+      l.code AS layer_code,
+      f.code,
+      f.name,
+      f.department_name,
+      f.dependency_name,
+      f.jurisdiction_name,
+      f.feature_type
+    FROM geo_features f
+    INNER JOIN geo_layers l ON l.id = f.layer_id
+    WHERE f.is_active = TRUE
+      AND l.code <> 'camaras'
+      ${where}
+    ORDER BY
+      COALESCE(f.department_name, 'ZZZ') ASC,
+      COALESCE(f.dependency_name, 'ZZZ') ASC,
+      COALESCE(f.jurisdiction_name, 'ZZZ') ASC,
+      l.code ASC,
+      f.name ASC
+  `;
+
+  const { rows } = await pool.query(sql, values);
+  return rows;
+}
+
+async function getTreeCameraRows(filters = {}) {
+  const cameraFeatures = await getCameraFeatures({
+    status: filters.status,
+    limit: 100000
+  });
+
+  return cameraFeatures.map((feature) => {
+    const props = feature.properties || {};
+    return {
+      id: props.id,
+      layer_code: props.layer_code,
+      code: props.code,
+      name: props.name,
+      department_name: props.department_name || "SIN DEPARTAMENTAL",
+      dependency_name: props.dependency_name || "SIN DEPENDENCIA",
+      jurisdiction_name: props.jurisdiction_name || "SIN JURISDICCIÓN",
+      feature_type: props.feature_type,
+      quadrant_name:
+        props.quadrant_name && String(props.quadrant_name).trim()
+          ? String(props.quadrant_name).trim()
+          : null,
+      quadrant_code:
+        props.quadrant_code && String(props.quadrant_code).trim()
+          ? String(props.quadrant_code).trim()
+          : null
+    };
+  });
+}
 
 export async function getGeoTree(filters = {}) {
-
-  const structural = await getStructuralFeatures({});
-  const cameras = await getCameraFeatures({});
-
-  const rows = [
-    ...structural.map(r => r.properties),
-    ...cameras.map(r => r.properties)
-  ];
+  const [structuralRows, cameraRows] = await Promise.all([
+    getTreeStructuralRows(filters),
+    getTreeCameraRows(filters)
+  ]);
 
   const departments = new Map();
 
-  function makeFeature(row) {
+  function makeFeature(row, fallbackName) {
     return {
       id: row.id,
       layerCode: row.layer_code,
-      name: row.name,
+      name: row.name || row.code || fallbackName || row.id,
       code: row.code,
       featureType: row.feature_type
     };
   }
 
   function ensureDepartment(name) {
-
-    const key = name || "SIN DEPARTAMENTAL";
+    const key = String(name || "SIN DEPARTAMENTAL").trim();
 
     if (!departments.has(key)) {
-
       departments.set(key, {
-        id:`department:${key}`,
-        type:"department",
-        name:key,
-        feature:null,
-        dependencyMap:new Map()
+        id: `department:${key}`,
+        type: "department",
+        name: key,
+        feature: null,
+        dependencyMap: new Map()
       });
     }
 
     return departments.get(key);
   }
 
-  function ensureDependency(depNode,name){
+  function ensureDependency(departmentNode, name) {
+    const key = String(name || "SIN DEPENDENCIA").trim();
 
-    const key = name || "SIN DEPENDENCIA";
-
-    if(!depNode.dependencyMap.has(key)){
-
-      depNode.dependencyMap.set(key,{
-        id:`dependency:${depNode.name}:${key}`,
-        type:"dependency",
-        name:key,
-        feature:null,
-        children:[]
+    if (!departmentNode.dependencyMap.has(key)) {
+      departmentNode.dependencyMap.set(key, {
+        id: `dependency:${departmentNode.name}:${key}`,
+        type: "dependency",
+        name: key,
+        feature: null,
+        jurisdictionNode: null,
+        quadrantGroup: {
+          id: `dependency:${departmentNode.name}:${key}:group:cuadrantes`,
+          type: "group",
+          name: "Cuadrantes",
+          groupKind: "cuadrantes",
+          children: []
+        },
+        cameraGroup: {
+          id: `dependency:${departmentNode.name}:${key}:group:camaras`,
+          type: "group",
+          name: "Cámaras",
+          groupKind: "camaras",
+          children: []
+        }
       });
-
     }
 
-    return depNode.dependencyMap.get(key);
+    return departmentNode.dependencyMap.get(key);
   }
 
-  for(const row of rows){
+  for (const row of structuralRows) {
+    const layerCode = row.layer_code;
+    const departmentName = row.department_name || "SIN DEPARTAMENTAL";
+    const dependencyName =
+      row.dependency_name || row.jurisdiction_name || "SIN DEPENDENCIA";
 
-    const departmentNode = ensureDepartment(row.department_name);
-    const dependencyNode = ensureDependency(departmentNode,row.dependency_name);
+    const departmentNode = ensureDepartment(departmentName);
+    const dependencyNode = ensureDependency(departmentNode, dependencyName);
 
-    if(row.feature_type === "camera"){
-
-      dependencyNode.children.push({
-        id:`camera:${row.id}`,
-        type:"camera",
-        name:row.name,
-        feature:makeFeature(row)
-      });
-
+    if (layerCode === "departamentales") {
+      departmentNode.feature = makeFeature(row, departmentNode.name);
+      continue;
     }
 
+    if (layerCode === "dependencias") {
+      dependencyNode.feature = makeFeature(row, dependencyNode.name);
+      continue;
+    }
+
+    if (layerCode === "jurisdicciones") {
+      const rawJurisdictionName = String(
+        row.jurisdiction_name || row.name || "Jurisdicción"
+      ).trim();
+
+      const jurisdictionDisplayName =
+        !rawJurisdictionName || rawJurisdictionName === dependencyNode.name
+          ? "Jurisdicción"
+          : rawJurisdictionName;
+
+      dependencyNode.jurisdictionNode = {
+        id: `jurisdiction:${dependencyNode.id}`,
+        type: "jurisdiction",
+        name: jurisdictionDisplayName,
+        feature: makeFeature(row, jurisdictionDisplayName)
+      };
+      continue;
+    }
+
+    if (layerCode === "cuadrantes") {
+      dependencyNode.quadrantGroup.children.push({
+        id: `quadrant:${row.id}`,
+        type: "quadrant",
+        name: row.name,
+        feature: makeFeature(row, row.name)
+      });
+      continue;
+    }
   }
 
-  const tree = [...departments.values()].map(dep=>({
+  for (const row of cameraRows) {
+    const departmentName = row.department_name || "SIN DEPARTAMENTAL";
+    const dependencyName =
+      row.dependency_name || row.jurisdiction_name || "SIN DEPENDENCIA";
 
-    id:dep.id,
-    type:"department",
-    name:dep.name,
-    children:[...dep.dependencyMap.values()]
+    const departmentNode = ensureDepartment(departmentName);
+    const dependencyNode = ensureDependency(departmentNode, dependencyName);
 
-  }));
+    if (
+      row.jurisdiction_name &&
+      row.jurisdiction_name !== "SIN JURISDICCIÓN" &&
+      !dependencyNode.jurisdictionNode
+    ) {
+      dependencyNode.jurisdictionNode = {
+        id: `jurisdiction:virtual:${dependencyNode.id}:${row.jurisdiction_name}`,
+        type: "jurisdiction",
+        name: row.jurisdiction_name,
+        feature: null
+      };
+    }
 
-  return tree.sort((a,b)=>a.name.localeCompare(b.name));
+    if (row.quadrant_name) {
+      const existsQuadrant = dependencyNode.quadrantGroup.children.some(
+        (item) =>
+          String(item.name || "").trim().toUpperCase() ===
+          String(row.quadrant_name || "").trim().toUpperCase()
+      );
+
+      if (!existsQuadrant) {
+        dependencyNode.quadrantGroup.children.push({
+          id: `quadrant:virtual:${dependencyNode.id}:${row.quadrant_code || row.quadrant_name}`,
+          type: "quadrant",
+          name: row.quadrant_name,
+          feature: row.quadrant_code
+            ? {
+                id: `virtual-quadrant-${row.quadrant_code}`,
+                layerCode: "cuadrantes",
+                name: row.quadrant_name,
+                code: row.quadrant_code,
+                featureType: "quadrant"
+              }
+            : null
+        });
+      }
+    }
+
+    dependencyNode.cameraGroup.children.push({
+      id: `camera:${row.id}`,
+      type: "camera",
+      name: row.name || row.code || "Cámara",
+      feature: makeFeature(row, row.name || row.code || "Cámara")
+    });
+  }
+
+  const tree = [...departments.values()].map((departmentNode) => {
+    const dependencies = [...departmentNode.dependencyMap.values()].map(
+      (dependencyNode) => {
+        const children = [];
+
+        if (dependencyNode.jurisdictionNode) {
+          children.push(dependencyNode.jurisdictionNode);
+        }
+
+        if (dependencyNode.quadrantGroup.children.length) {
+          dependencyNode.quadrantGroup.children.sort((a, b) =>
+            String(a.name).localeCompare(String(b.name))
+          );
+          children.push(dependencyNode.quadrantGroup);
+        }
+
+        if (dependencyNode.cameraGroup.children.length) {
+          dependencyNode.cameraGroup.children.sort((a, b) =>
+            String(a.name).localeCompare(String(b.name))
+          );
+          children.push(dependencyNode.cameraGroup);
+        }
+
+        return {
+          id: dependencyNode.id,
+          type: dependencyNode.type,
+          name: dependencyNode.name,
+          feature: dependencyNode.feature || null,
+          children
+        };
+      }
+    );
+
+    return {
+      id: departmentNode.id,
+      type: departmentNode.type,
+      name: departmentNode.name,
+      feature: departmentNode.feature || null,
+      children: dependencies.sort((a, b) =>
+        String(a.name).localeCompare(String(b.name))
+      )
+    };
+  });
+
+  return tree.sort((a, b) => String(a.name).localeCompare(String(b.name)));
 }
 
 export async function getHealth() {
-
   const result = await pool.query(`
     SELECT
       current_database() AS database,
@@ -386,6 +628,5 @@ export async function getHealth() {
       PostGIS_Version() AS postgis_version,
       NOW() AS server_time
   `);
-
   return result.rows[0];
 }
