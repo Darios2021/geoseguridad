@@ -13,7 +13,7 @@ const REQUIRED_HEADERS = [
 ];
 
 function normalizeWhitespace(value) {
-  return String(value || "")
+  return String(value ?? "")
     .replace(/\u00A0/g, " ")
     .replace(/\u200B/g, "")
     .replace(/\u200C/g, "")
@@ -40,12 +40,6 @@ function parseDecimal(value) {
   const clean = normalizeWhitespace(value);
   if (!clean) return null;
 
-  // Soporta:
-  // -31,44092518
-  // -31.44092518
-  // 31,44092518
-  // 31.44092518
-  // 1.234,56
   let normalized = clean;
 
   if (normalized.includes(",") && normalized.includes(".")) {
@@ -71,7 +65,7 @@ function parseBooleanActive(value) {
   return true;
 }
 
-function splitCsvLine(line) {
+function splitCsvLine(line, delimiter = ",") {
   const result = [];
   let current = "";
   let inQuotes = false;
@@ -90,7 +84,7 @@ function splitCsvLine(line) {
       continue;
     }
 
-    if (char === "," && !inQuotes) {
+    if (char === delimiter && !inQuotes) {
       result.push(current);
       current = "";
       continue;
@@ -101,6 +95,12 @@ function splitCsvLine(line) {
 
   result.push(current);
   return result.map((value) => value.trim());
+}
+
+function detectDelimiter(firstLine) {
+  const commaCount = (firstLine.match(/,/g) || []).length;
+  const semicolonCount = (firstLine.match(/;/g) || []).length;
+  return semicolonCount > commaCount ? ";" : ",";
 }
 
 function looksLikeHeaderRow(row) {
@@ -119,16 +119,6 @@ function mapRowByStandardHeaders(headerRow, values) {
 }
 
 function mapRowByLegacyPositions(values) {
-  // Formato legado:
-  // 0 CAMARA
-  // 1 UBICACION
-  // 2 DESCRIPCION
-  // 3 DEPARTAMENTO
-  // 4 ESTADO
-  // 5 TIPO
-  // 6 LATITUD
-  // 7 LONGITUD
-  // 8 ACTIVA (si no existe => SI)
   return {
     CAMARA: values[0] ?? "",
     UBICACION: values[1] ?? "",
@@ -142,18 +132,40 @@ function mapRowByLegacyPositions(values) {
   };
 }
 
+function ensureValidBuffer(buffer) {
+  if (!buffer) {
+    throw new Error("No se recibió archivo para procesar.");
+  }
+
+  if (!Buffer.isBuffer(buffer)) {
+    throw new Error("El archivo recibido no tiene un buffer válido.");
+  }
+
+  if (!buffer.length) {
+    throw new Error("El archivo recibido está vacío.");
+  }
+}
+
 function parseCsv(buffer) {
-  const text = buffer.toString("utf8").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const lines = text
+  ensureValidBuffer(buffer);
+
+  const text = buffer
+    .toString("utf8")
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+
+  const rawLines = text
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
 
-  if (!lines.length) {
+  if (!rawLines.length) {
     throw new Error("El CSV está vacío.");
   }
 
-  const firstRow = splitCsvLine(lines[0]);
+  const delimiter = detectDelimiter(rawLines[0]);
+  const firstRow = splitCsvLine(rawLines[0], delimiter);
   const rows = [];
   let detectedFormat = "legacy_without_headers";
 
@@ -168,19 +180,23 @@ function parseCsv(buffer) {
       }
     }
 
-    for (let i = 1; i < lines.length; i += 1) {
-      const values = splitCsvLine(lines[i]);
+    for (let i = 1; i < rawLines.length; i += 1) {
+      const values = splitCsvLine(rawLines[i], delimiter);
+
+      if (!values.some((v) => normalizeWhitespace(v))) continue;
+
       rows.push(mapRowByStandardHeaders(headerRow, values));
     }
 
     return {
       rows,
-      detectedFormat
+      detectedFormat,
+      delimiter
     };
   }
 
-  for (let i = 0; i < lines.length; i += 1) {
-    const values = splitCsvLine(lines[i]);
+  for (let i = 0; i < rawLines.length; i += 1) {
+    const values = splitCsvLine(rawLines[i], delimiter);
 
     if (!values.some((v) => normalizeWhitespace(v))) continue;
 
@@ -189,7 +205,8 @@ function parseCsv(buffer) {
 
   return {
     rows,
-    detectedFormat
+    detectedFormat,
+    delimiter
   };
 }
 
@@ -264,6 +281,7 @@ function prepareCameraCatalogImport(buffer) {
 
   return {
     detectedFormat: parsed.detectedFormat,
+    delimiter: parsed.delimiter,
     records,
     summary: summarizeRecords(records),
     preview: buildPreview(records)
@@ -377,13 +395,14 @@ export async function previewCameraCatalogImport({
   buffer,
   filename = "camaras.csv"
 }) {
-  const { detectedFormat, records, summary, preview } =
+  const { detectedFormat, delimiter, records, summary, preview } =
     prepareCameraCatalogImport(buffer);
 
   return {
     ok: true,
     filename,
     detectedFormat,
+    delimiter,
     summary,
     preview,
     warnings: records
@@ -402,7 +421,9 @@ export async function importCameraCatalogToDatabase({
   filename = "camaras.csv",
   replaceExisting = true
 }) {
-  const { detectedFormat, records, summary } = prepareCameraCatalogImport(buffer);
+  const { detectedFormat, delimiter, records, summary } =
+    prepareCameraCatalogImport(buffer);
+
   const client = await pool.connect();
 
   try {
@@ -425,6 +446,7 @@ export async function importCameraCatalogToDatabase({
       ok: true,
       filename,
       detectedFormat,
+      delimiter,
       replaceExisting,
       summary,
       syncStats
