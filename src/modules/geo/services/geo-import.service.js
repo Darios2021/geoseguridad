@@ -37,8 +37,9 @@ function normalizeDepartmentName(value) {
   const raw = normalizeName(value);
   if (!raw) return null;
 
-  const match = raw.match(/departamental\s*(?:n[º°o]\s*)?(\d+)/i);
-  if (!match) return raw.toUpperCase();
+  const upper = raw.toUpperCase();
+  const match = upper.match(/DEPARTAMENTAL\s*(?:N[º°O]\s*)?(\d+)/i);
+  if (!match) return upper;
 
   return `DEPARTAMENTAL Nº ${Number(match[1])}`;
 }
@@ -47,19 +48,30 @@ function normalizeDependencyName(value) {
   const raw = normalizeName(value);
   if (!raw) return null;
 
-  const upper = raw.toUpperCase();
+  let upper = raw.toUpperCase();
 
-  let match = upper.match(/(?:COMISARIA|COMISARÍA|CRIA|CRÍA)\.?\s*(\d+)/i);
+  upper = upper
+    .replace(/\bCRIA\.?\b/g, "COMISARIA")
+    .replace(/\bCRÍA\.?\b/g, "COMISARIA")
+    .replace(/\bCOMISAR[IÍ]A\b/g, "COMISARIA")
+    .replace(/\bSUBCOMISAR[IÍ]A\b/g, "SUB COMISARIA")
+    .replace(/\bSUB\.?\s*COMISAR[IÍ]A\b/g, "SUB COMISARIA")
+    .replace(/\bSUB\.?\s*CRIA\.?\b/g, "SUB COMISARIA")
+    .replace(/\bSUB\.?\s*CRÍA\.?\b/g, "SUB COMISARIA")
+    .replace(/\bSTA\.?\b/g, "SANTA")
+    .replace(/\bSTA\b/g, "SANTA");
+
+  let match = upper.match(/\bCOMISARIA\.?\s*(\d+)\b/i);
   if (match) {
     return `COMISARIA ${String(Number(match[1])).padStart(2, "0")}`;
   }
 
-  match = upper.match(/SUB\.?\s*(?:COMISARIA|COMISARÍA|CRIA|CRÍA)\.?\s*(.+)$/i);
+  match = upper.match(/\bSUB COMISARIA\.?\s*(.+)$/i);
   if (match) {
     return `SUB COMISARIA ${normalizeWhitespace(match[1]).toUpperCase()}`;
   }
 
-  return upper;
+  return normalizeWhitespace(upper);
 }
 
 function normalizeJurisdictionName(value, fallbackDependencyName = null) {
@@ -67,6 +79,7 @@ function normalizeJurisdictionName(value, fallbackDependencyName = null) {
   if (!raw) return fallbackDependencyName || null;
 
   const normalizedDependency = normalizeDependencyName(raw);
+
   if (/^(COMISARIA|SUB COMISARIA)\b/i.test(normalizedDependency || "")) {
     return normalizedDependency;
   }
@@ -355,14 +368,16 @@ function buildFeatureFromPlacemark(placemark, folderPath, profile) {
   let jurisdictionName = null;
 
   if (layerCode === "departamentales") {
-    name = normalizeDepartmentName(rawName) || rawName;
+    name = normalizeDepartmentName(rawName) || departmentName || rawName;
     departmentName = normalizeDepartmentName(rawName) || departmentName;
   }
 
   if (layerCode === "cuadrantes") {
     name = normalizeWhitespace(rawName).toUpperCase();
-    dependencyName = inferQuadrantDependencyName(name);
-    jurisdictionName = null;
+
+    const inferredDependency = inferQuadrantDependencyName(name);
+    dependencyName = dependencyName || inferredDependency || null;
+    jurisdictionName = dependencyName || null;
   }
 
   if (layerCode === "jurisdicciones") {
@@ -378,6 +393,7 @@ function buildFeatureFromPlacemark(placemark, folderPath, profile) {
   if (layerCode === "dependencias") {
     dependencyName = dependencyName || normalizeDependencyName(name);
     jurisdictionName = dependencyName || null;
+    name = dependencyName || normalizeWhitespace(rawName).toUpperCase();
   }
 
   const feature = {
@@ -624,11 +640,14 @@ function buildPreviewRows(features, limit = 200) {
   }));
 }
 
-async function getLayerIds(client, profile) {
-  const requiredCodes =
-    profile === "departamentales_cuadrantes"
-      ? ["departamentales", "cuadrantes"]
-      : ["camaras", "dependencias", "jurisdicciones"];
+async function getLayerIds(client) {
+  const requiredCodes = [
+    "departamentales",
+    "cuadrantes",
+    "jurisdicciones",
+    "dependencias",
+    "camaras"
+  ];
 
   const { rows } = await client.query(
     `
@@ -852,7 +871,7 @@ export async function importKmzToDatabase({
   try {
     await client.query("BEGIN");
 
-    const layerIds = await getLayerIds(client, profile);
+    const layerIds = await getLayerIds(client);
 
     if (replaceExisting) {
       await clearImportedLayers(client, layerIds);
