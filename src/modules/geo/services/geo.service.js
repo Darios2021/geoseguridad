@@ -96,7 +96,13 @@ async function getCameraFeatures(filters = {}) {
       gl.code AS layer_code,
       gl.name AS layer_name,
       gcc.camera_code AS code,
-      gcc.camera_code AS name,
+
+      CASE
+        WHEN gcc.location_text IS NOT NULL AND btrim(gcc.location_text) <> ''
+        THEN gcc.camera_code || ' - ' || gcc.location_text
+        ELSE gcc.camera_code
+      END AS name,
+
       gcc.description,
       'camera' AS feature_type,
       CASE
@@ -385,6 +391,12 @@ async function getTreeCameraRows(filters = {}) {
 
   return cameraFeatures.map((feature) => {
     const props = feature.properties || {};
+    const departmentCatalog =
+      props.camera_department_catalog &&
+      String(props.camera_department_catalog).trim()
+        ? String(props.camera_department_catalog).trim()
+        : "SIN DEPARTAMENTO";
+
     return {
       id: props.id,
       layer_code: props.layer_code,
@@ -401,17 +413,13 @@ async function getTreeCameraRows(filters = {}) {
       quadrant_code:
         props.quadrant_code && String(props.quadrant_code).trim()
           ? String(props.quadrant_code).trim()
-          : null
+          : null,
+      camera_department_catalog: departmentCatalog
     };
   });
 }
 
-export async function getGeoTree(filters = {}) {
-  const [structuralRows, cameraRows] = await Promise.all([
-    getTreeStructuralRows(filters),
-    getTreeCameraRows(filters)
-  ]);
-
+function buildStructuralTree(structuralRows) {
   const departments = new Map();
 
   function makeFeature(row, fallbackName) {
@@ -455,13 +463,6 @@ export async function getGeoTree(filters = {}) {
           type: "group",
           name: "Cuadrantes",
           groupKind: "cuadrantes",
-          children: []
-        },
-        cameraGroup: {
-          id: `dependency:${departmentNode.name}:${key}:group:camaras`,
-          type: "group",
-          name: "Cámaras",
-          groupKind: "camaras",
           children: []
         }
       });
@@ -515,62 +516,7 @@ export async function getGeoTree(filters = {}) {
         name: row.name,
         feature: makeFeature(row, row.name)
       });
-      continue;
     }
-  }
-
-  for (const row of cameraRows) {
-    const departmentName = row.department_name || "SIN DEPARTAMENTAL";
-    const dependencyName =
-      row.dependency_name || row.jurisdiction_name || "SIN DEPENDENCIA";
-
-    const departmentNode = ensureDepartment(departmentName);
-    const dependencyNode = ensureDependency(departmentNode, dependencyName);
-
-    if (
-      row.jurisdiction_name &&
-      row.jurisdiction_name !== "SIN JURISDICCIÓN" &&
-      !dependencyNode.jurisdictionNode
-    ) {
-      dependencyNode.jurisdictionNode = {
-        id: `jurisdiction:virtual:${dependencyNode.id}:${row.jurisdiction_name}`,
-        type: "jurisdiction",
-        name: row.jurisdiction_name,
-        feature: null
-      };
-    }
-
-    if (row.quadrant_name) {
-      const existsQuadrant = dependencyNode.quadrantGroup.children.some(
-        (item) =>
-          String(item.name || "").trim().toUpperCase() ===
-          String(row.quadrant_name || "").trim().toUpperCase()
-      );
-
-      if (!existsQuadrant) {
-        dependencyNode.quadrantGroup.children.push({
-          id: `quadrant:virtual:${dependencyNode.id}:${row.quadrant_code || row.quadrant_name}`,
-          type: "quadrant",
-          name: row.quadrant_name,
-          feature: row.quadrant_code
-            ? {
-                id: `virtual-quadrant-${row.quadrant_code}`,
-                layerCode: "cuadrantes",
-                name: row.quadrant_name,
-                code: row.quadrant_code,
-                featureType: "quadrant"
-              }
-            : null
-        });
-      }
-    }
-
-    dependencyNode.cameraGroup.children.push({
-      id: `camera:${row.id}`,
-      type: "camera",
-      name: row.name || row.code || "Cámara",
-      feature: makeFeature(row, row.name || row.code || "Cámara")
-    });
   }
 
   const tree = [...departments.values()].map((departmentNode) => {
@@ -587,13 +533,6 @@ export async function getGeoTree(filters = {}) {
             String(a.name).localeCompare(String(b.name))
           );
           children.push(dependencyNode.quadrantGroup);
-        }
-
-        if (dependencyNode.cameraGroup.children.length) {
-          dependencyNode.cameraGroup.children.sort((a, b) =>
-            String(a.name).localeCompare(String(b.name))
-          );
-          children.push(dependencyNode.cameraGroup);
         }
 
         return {
@@ -618,6 +557,72 @@ export async function getGeoTree(filters = {}) {
   });
 
   return tree.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
+function buildCameraCatalogTree(cameraRows) {
+  const cameraDepartments = new Map();
+
+  for (const row of cameraRows) {
+    const departmentKey = String(
+      row.camera_department_catalog || "SIN DEPARTAMENTO"
+    ).trim();
+
+    if (!cameraDepartments.has(departmentKey)) {
+      cameraDepartments.set(departmentKey, {
+        id: `camera-catalog-department:${departmentKey}`,
+        type: "group",
+        name: departmentKey,
+        groupKind: "camaras",
+        children: []
+      });
+    }
+
+    cameraDepartments.get(departmentKey).children.push({
+      id: `camera:${row.id}`,
+      type: "camera",
+      name: row.name || row.code || "Cámara",
+      feature: {
+        id: row.id,
+        layerCode: row.layer_code,
+        name: row.name || row.code || "Cámara",
+        code: row.code,
+        featureType: row.feature_type
+      }
+    });
+  }
+
+  const departmentNodes = [...cameraDepartments.values()]
+    .map((node) => ({
+      ...node,
+      children: node.children.sort((a, b) =>
+        String(a.name).localeCompare(String(b.name))
+      )
+    }))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+  if (!departmentNodes.length) {
+    return null;
+  }
+
+  return {
+    id: "group:camaras-root",
+    type: "group",
+    name: "Cámaras",
+    groupKind: "camaras",
+    children: departmentNodes
+  };
+}
+
+export async function getGeoTree(filters = {}) {
+  const [structuralRows, cameraRows] = await Promise.all([
+    getTreeStructuralRows(filters),
+    getTreeCameraRows(filters)
+  ]);
+
+  const structuralTree = buildStructuralTree(structuralRows);
+  const cameraRoot = buildCameraCatalogTree(cameraRows);
+
+  return cameraRoot ? [...structuralTree, cameraRoot] : structuralTree;
 }
 
 export async function getHealth() {
