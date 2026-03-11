@@ -45,10 +45,10 @@ function parseDecimal(value) {
   // -31.44092518
   // 31,44092518
   // 31.44092518
+  // 1.234,56
   let normalized = clean;
 
   if (normalized.includes(",") && normalized.includes(".")) {
-    // si viniera algo raro tipo 1.234,56
     normalized = normalized.replace(/\./g, "").replace(",", ".");
   } else if (normalized.includes(",")) {
     normalized = normalized.replace(",", ".");
@@ -103,6 +103,45 @@ function splitCsvLine(line) {
   return result.map((value) => value.trim());
 }
 
+function looksLikeHeaderRow(row) {
+  const normalized = row.map(normalizeHeader);
+  return REQUIRED_HEADERS.every((header) => normalized.includes(header));
+}
+
+function mapRowByStandardHeaders(headerRow, values) {
+  const row = {};
+
+  headerRow.forEach((header, idx) => {
+    row[header] = values[idx] ?? "";
+  });
+
+  return row;
+}
+
+function mapRowByLegacyPositions(values) {
+  // Formato legado:
+  // 0 CAMARA
+  // 1 UBICACION
+  // 2 DESCRIPCION
+  // 3 DEPARTAMENTO
+  // 4 ESTADO
+  // 5 TIPO
+  // 6 LATITUD
+  // 7 LONGITUD
+  // 8 ACTIVA (si no existe => SI)
+  return {
+    CAMARA: values[0] ?? "",
+    UBICACION: values[1] ?? "",
+    DESCRIPCION: values[2] ?? "",
+    DEPARTAMENTO: values[3] ?? "",
+    ESTADO: values[4] ?? "",
+    TIPO: values[5] ?? "",
+    LATITUD: values[6] ?? "",
+    LONGITUD: values[7] ?? "",
+    ACTIVA: values[8] ?? "SI"
+  };
+}
+
 function parseCsv(buffer) {
   const text = buffer.toString("utf8").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const lines = text
@@ -114,30 +153,47 @@ function parseCsv(buffer) {
     throw new Error("El CSV está vacío.");
   }
 
-  const headerRow = splitCsvLine(lines[0]).map(normalizeHeader);
-
-  for (const header of REQUIRED_HEADERS) {
-    if (!headerRow.includes(header)) {
-      throw new Error(`Falta la columna requerida: ${header}`);
-    }
-  }
-
+  const firstRow = splitCsvLine(lines[0]);
   const rows = [];
-  for (let i = 1; i < lines.length; i += 1) {
-    const values = splitCsvLine(lines[i]);
-    const row = {};
+  let detectedFormat = "legacy_without_headers";
 
-    headerRow.forEach((header, idx) => {
-      row[header] = values[idx] ?? "";
-    });
+  if (looksLikeHeaderRow(firstRow)) {
+    detectedFormat = "standard_with_headers";
 
-    rows.push(row);
+    const headerRow = firstRow.map(normalizeHeader);
+
+    for (const header of REQUIRED_HEADERS) {
+      if (!headerRow.includes(header)) {
+        throw new Error(`Falta la columna requerida: ${header}`);
+      }
+    }
+
+    for (let i = 1; i < lines.length; i += 1) {
+      const values = splitCsvLine(lines[i]);
+      rows.push(mapRowByStandardHeaders(headerRow, values));
+    }
+
+    return {
+      rows,
+      detectedFormat
+    };
   }
 
-  return rows;
+  for (let i = 0; i < lines.length; i += 1) {
+    const values = splitCsvLine(lines[i]);
+
+    if (!values.some((v) => normalizeWhitespace(v))) continue;
+
+    rows.push(mapRowByLegacyPositions(values));
+  }
+
+  return {
+    rows,
+    detectedFormat
+  };
 }
 
-function buildCatalogRecord(rawRow, index) {
+function buildCatalogRecord(rawRow, index, hasHeader = true) {
   const cameraCode = normalizeCameraCode(rawRow.CAMARA);
   const latitude = parseDecimal(rawRow.LATITUD);
   const longitude = parseDecimal(rawRow.LONGITUD);
@@ -149,7 +205,7 @@ function buildCatalogRecord(rawRow, index) {
   if (longitude === null) warnings.push("Longitud inválida o vacía");
 
   return {
-    rowNumber: index + 2,
+    rowNumber: hasHeader ? index + 2 : index + 1,
     cameraCode,
     locationText: normalizeText(rawRow.UBICACION),
     description: normalizeText(rawRow.DESCRIPCION),
@@ -195,14 +251,19 @@ function buildPreview(records, limit = 100) {
 }
 
 function prepareCameraCatalogImport(buffer) {
-  const parsedRows = parseCsv(buffer);
-  const records = parsedRows.map((row, idx) => buildCatalogRecord(row, idx));
+  const parsed = parseCsv(buffer);
+  const hasHeader = parsed.detectedFormat === "standard_with_headers";
+
+  const records = parsed.rows.map((row, idx) =>
+    buildCatalogRecord(row, idx, hasHeader)
+  );
 
   if (!records.length) {
     throw new Error("El CSV no contiene registros.");
   }
 
   return {
+    detectedFormat: parsed.detectedFormat,
     records,
     summary: summarizeRecords(records),
     preview: buildPreview(records)
@@ -316,11 +377,13 @@ export async function previewCameraCatalogImport({
   buffer,
   filename = "camaras.csv"
 }) {
-  const { records, summary, preview } = prepareCameraCatalogImport(buffer);
+  const { detectedFormat, records, summary, preview } =
+    prepareCameraCatalogImport(buffer);
 
   return {
     ok: true,
     filename,
+    detectedFormat,
     summary,
     preview,
     warnings: records
@@ -339,7 +402,7 @@ export async function importCameraCatalogToDatabase({
   filename = "camaras.csv",
   replaceExisting = true
 }) {
-  const { records, summary } = prepareCameraCatalogImport(buffer);
+  const { detectedFormat, records, summary } = prepareCameraCatalogImport(buffer);
   const client = await pool.connect();
 
   try {
@@ -361,6 +424,7 @@ export async function importCameraCatalogToDatabase({
     return {
       ok: true,
       filename,
+      detectedFormat,
       replaceExisting,
       summary,
       syncStats
