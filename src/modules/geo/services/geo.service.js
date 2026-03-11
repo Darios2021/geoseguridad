@@ -6,7 +6,89 @@ export async function getLayers() {
   return result.rows;
 }
 
-export async function getFeatures(filters = {}) {
+function buildStandardFeature(row) {
+  return {
+    type: "Feature",
+    id: row.id,
+    geometry: row.geometry,
+    properties: {
+      id: row.id,
+      layer_id: row.layer_id,
+      layer_code: row.layer_code,
+      layer_name: row.layer_name,
+      code: row.code,
+      name: row.name,
+      description: row.description,
+      feature_type: row.feature_type,
+      status: row.status,
+      priority: row.priority,
+      department_name: row.department_name,
+      dependency_name: row.dependency_name,
+      jurisdiction_name: row.jurisdiction_name,
+      source_type: row.source_type,
+      source_reference: row.source_reference,
+      external_id: row.external_id,
+      is_active: row.is_active,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      ...(row.properties || {})
+    }
+  };
+}
+
+async function getCameraFeatures(filters = {}) {
+  const values = [];
+  const where = [];
+  let idx = 1;
+
+  where.push(`gcc.latitude IS NOT NULL`);
+  where.push(`gcc.longitude IS NOT NULL`);
+
+  if (filters.department) {
+    where.push(`
+      COALESCE(dep_rel.department_name, dep_catalog.department_name, gcc.department_catalog) = $${idx++}
+    `);
+    values.push(filters.department);
+  }
+
+  if (filters.dependency) {
+    where.push(`
+      COALESCE(dep_rel.dependency_name, jur_rel.dependency_name, quad_rel.dependency_name, dep_catalog.dependency_name) = $${idx++}
+    `);
+    values.push(filters.dependency);
+  }
+
+  if (filters.status) {
+    if (String(filters.status).toLowerCase() === "active") {
+      where.push(`gcc.is_active = TRUE`);
+    } else if (String(filters.status).toLowerCase() === "inactive") {
+      where.push(`gcc.is_active = FALSE`);
+    } else {
+      where.push(`
+        CASE
+          WHEN gcc.is_active THEN 'active'
+          ELSE 'inactive'
+        END = $${idx++}
+      `);
+      values.push(filters.status);
+    }
+  }
+
+  const limit = Math.min(Number(filters.limit || 1000), 10000);
+  values.push(limit);
+
+  const sql = `
+    ${GEO_QUERIES.cameraFeaturesBase}
+    WHERE ${where.join(" AND ")}
+    ORDER BY gcc.camera_code ASC
+    LIMIT $${idx}
+  `;
+
+  const result = await pool.query(sql, values);
+  return result.rows.map(buildStandardFeature);
+}
+
+async function getStructuralFeatures(filters = {}) {
   const values = [];
   let where = "";
   let idx = 1;
@@ -42,37 +124,18 @@ export async function getFeatures(filters = {}) {
   `;
 
   const result = await pool.query(sql, values);
-
-  return result.rows.map((row) => ({
-    type: "Feature",
-    id: row.id,
-    geometry: row.geometry,
-    properties: {
-      id: row.id,
-      layer_id: row.layer_id,
-      layer_code: row.layer_code,
-      layer_name: row.layer_name,
-      code: row.code,
-      name: row.name,
-      description: row.description,
-      feature_type: row.feature_type,
-      status: row.status,
-      priority: row.priority,
-      department_name: row.department_name,
-      dependency_name: row.dependency_name,
-      jurisdiction_name: row.jurisdiction_name,
-      source_type: row.source_type,
-      source_reference: row.source_reference,
-      external_id: row.external_id,
-      is_active: row.is_active,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-      ...(row.properties || {})
-    }
-  }));
+  return result.rows.map(buildStandardFeature);
 }
 
-export async function getGeoTree(filters = {}) {
+export async function getFeatures(filters = {}) {
+  if (filters.layer === "camaras") {
+    return getCameraFeatures(filters);
+  }
+
+  return getStructuralFeatures(filters);
+}
+
+async function getTreeStructuralRows(filters = {}) {
   const values = [];
   let where = "";
   let idx = 1;
@@ -95,7 +158,8 @@ export async function getGeoTree(filters = {}) {
     FROM geo_features f
     INNER JOIN geo_layers l ON l.id = f.layer_id
     WHERE f.is_active = TRUE
-    ${where}
+      AND l.code <> 'camaras'
+      ${where}
     ORDER BY
       COALESCE(f.department_name, 'ZZZ') ASC,
       COALESCE(f.dependency_name, 'ZZZ') ASC,
@@ -105,6 +169,125 @@ export async function getGeoTree(filters = {}) {
   `;
 
   const { rows } = await pool.query(sql, values);
+  return rows;
+}
+
+async function getTreeCameraRows(filters = {}) {
+  const values = [];
+  const where = [];
+  let idx = 1;
+
+  where.push(`gcc.latitude IS NOT NULL`);
+  where.push(`gcc.longitude IS NOT NULL`);
+
+  if (filters.status) {
+    if (String(filters.status).toLowerCase() === "active") {
+      where.push(`gcc.is_active = TRUE`);
+    } else if (String(filters.status).toLowerCase() === "inactive") {
+      where.push(`gcc.is_active = FALSE`);
+    } else {
+      where.push(`
+        CASE
+          WHEN gcc.is_active THEN 'active'
+          ELSE 'inactive'
+        END = $${idx++}
+      `);
+      values.push(filters.status);
+    }
+  }
+
+  const sql = `
+    SELECT
+      gcc.id,
+      'camaras' AS layer_code,
+      gcc.camera_code AS code,
+      gcc.camera_code AS name,
+      COALESCE(dep_rel.department_name, dep_catalog.department_name, gcc.department_catalog, 'SIN DEPARTAMENTAL') AS department_name,
+      COALESCE(dep_rel.dependency_name, jur_rel.dependency_name, quad_rel.dependency_name, dep_catalog.dependency_name, 'SIN DEPENDENCIA') AS dependency_name,
+      COALESCE(jur_rel.jurisdiction_name, dep_rel.jurisdiction_name, quad_rel.jurisdiction_name, 'SIN JURISDICCIÓN') AS jurisdiction_name,
+      'camera' AS feature_type
+    FROM geo_camera_catalog gcc
+
+    LEFT JOIN LATERAL (
+      SELECT
+        f.department_name,
+        f.dependency_name,
+        f.jurisdiction_name
+      FROM geo_features f
+      INNER JOIN geo_layers l ON l.id = f.layer_id
+      WHERE f.is_active = TRUE
+        AND l.code = 'dependencias'
+        AND ST_Intersects(
+          f.geom,
+          ST_SetSRID(ST_MakePoint(gcc.longitude::double precision, gcc.latitude::double precision), 4326)
+        )
+      ORDER BY ST_Area(ST_Envelope(f.geom)) ASC NULLS LAST, f.name ASC
+      LIMIT 1
+    ) dep_rel ON TRUE
+
+    LEFT JOIN LATERAL (
+      SELECT
+        f.dependency_name,
+        f.jurisdiction_name
+      FROM geo_features f
+      INNER JOIN geo_layers l ON l.id = f.layer_id
+      WHERE f.is_active = TRUE
+        AND l.code = 'jurisdicciones'
+        AND ST_Intersects(
+          f.geom,
+          ST_SetSRID(ST_MakePoint(gcc.longitude::double precision, gcc.latitude::double precision), 4326)
+        )
+      ORDER BY ST_Area(ST_Envelope(f.geom)) ASC NULLS LAST, f.name ASC
+      LIMIT 1
+    ) jur_rel ON TRUE
+
+    LEFT JOIN LATERAL (
+      SELECT
+        f.dependency_name,
+        f.jurisdiction_name
+      FROM geo_features f
+      INNER JOIN geo_layers l ON l.id = f.layer_id
+      WHERE f.is_active = TRUE
+        AND l.code = 'cuadrantes'
+        AND ST_Intersects(
+          f.geom,
+          ST_SetSRID(ST_MakePoint(gcc.longitude::double precision, gcc.latitude::double precision), 4326)
+        )
+      ORDER BY f.name ASC
+      LIMIT 1
+    ) quad_rel ON TRUE
+
+    LEFT JOIN LATERAL (
+      SELECT
+        d.department_name,
+        d.dependency_name
+      FROM geo_features d
+      INNER JOIN geo_layers l ON l.id = d.layer_id
+      WHERE d.is_active = TRUE
+        AND l.code = 'dependencias'
+        AND gcc.department_catalog IS NOT NULL
+        AND upper(coalesce(d.department_name, '')) = upper(coalesce(gcc.department_catalog, ''))
+      ORDER BY d.name ASC
+      LIMIT 1
+    ) dep_catalog ON TRUE
+
+    WHERE ${where.join(" AND ")}
+    ORDER BY
+      COALESCE(dep_rel.department_name, dep_catalog.department_name, gcc.department_catalog, 'ZZZ') ASC,
+      COALESCE(dep_rel.dependency_name, jur_rel.dependency_name, quad_rel.dependency_name, dep_catalog.dependency_name, 'ZZZ') ASC,
+      gcc.camera_code ASC
+  `;
+
+  const { rows } = await pool.query(sql, values);
+  return rows;
+}
+
+export async function getGeoTree(filters = {}) {
+  const [structuralRows, cameraRows] = await Promise.all([
+    getTreeStructuralRows(filters),
+    getTreeCameraRows(filters)
+  ]);
+
   const departments = new Map();
 
   function makeFeature(row, fallbackName) {
@@ -163,7 +346,7 @@ export async function getGeoTree(filters = {}) {
     return departmentNode.dependencyMap.get(key);
   }
 
-  for (const row of rows) {
+  for (const row of structuralRows) {
     const layerCode = row.layer_code;
     const departmentName = row.department_name || "SIN DEPARTAMENTAL";
     const dependencyName =
@@ -208,17 +391,23 @@ export async function getGeoTree(filters = {}) {
         name: row.name,
         feature: makeFeature(row, row.name)
       });
-      continue;
     }
+  }
 
-    if (layerCode === "camaras") {
-      dependencyNode.cameraGroup.children.push({
-        id: `camera:${row.id}`,
-        type: "camera",
-        name: row.name,
-        feature: makeFeature(row, row.name)
-      });
-    }
+  for (const row of cameraRows) {
+    const departmentName = row.department_name || "SIN DEPARTAMENTAL";
+    const dependencyName =
+      row.dependency_name || row.jurisdiction_name || "SIN DEPENDENCIA";
+
+    const departmentNode = ensureDepartment(departmentName);
+    const dependencyNode = ensureDependency(departmentNode, dependencyName);
+
+    dependencyNode.cameraGroup.children.push({
+      id: `camera:${row.id}`,
+      type: "camera",
+      name: row.name || row.code || "Cámara",
+      feature: makeFeature(row, row.name || row.code || "Cámara")
+    });
   }
 
   const tree = [...departments.values()].map((departmentNode) => {
