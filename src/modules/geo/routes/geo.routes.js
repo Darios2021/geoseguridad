@@ -1,5 +1,6 @@
 import { Router } from "express";
 import {
+  geoTree,
   health,
   importKmz,
   importKmzPreview,
@@ -13,6 +14,7 @@ const router = Router();
 router.get("/health", health);
 router.get("/layers", listLayers);
 router.get("/features", listFeatures);
+router.get("/tree", geoTree);
 
 router.post("/import/preview", importKmzMiddleware, importKmzPreview);
 router.post("/import/kmz", importKmzMiddleware, importKmz);

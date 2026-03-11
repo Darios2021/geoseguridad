@@ -72,6 +72,264 @@ export async function getFeatures(filters = {}) {
   }));
 }
 
+export async function getGeoTree(filters = {}) {
+  const values = [];
+  let where = "";
+  let idx = 1;
+
+  if (filters.status) {
+    where += ` AND f.status = $${idx++}`;
+    values.push(filters.status);
+  }
+
+  const sql = `
+    SELECT
+      f.id,
+      l.code AS layer_code,
+      l.name AS layer_name,
+      f.code,
+      f.name,
+      f.department_name,
+      f.dependency_name,
+      f.jurisdiction_name,
+      f.feature_type,
+      f.status,
+      f.properties
+    FROM geo_features f
+    INNER JOIN geo_layers l ON l.id = f.layer_id
+    WHERE f.is_active = TRUE
+    ${where}
+    ORDER BY
+      COALESCE(f.department_name, 'ZZZ') ASC,
+      COALESCE(f.dependency_name, 'ZZZ') ASC,
+      COALESCE(f.jurisdiction_name, 'ZZZ') ASC,
+      l.code ASC,
+      f.name ASC
+  `;
+
+  const result = await pool.query(sql, values);
+  const rows = result.rows;
+
+  const departmentMap = new Map();
+
+  function ensureDepartment(name) {
+    const key = String(name || "SIN DEPARTAMENTAL").trim();
+
+    if (!departmentMap.has(key)) {
+      departmentMap.set(key, {
+        id: `department:${key}`,
+        type: "department",
+        name: key,
+        counts: {
+          dependencias: 0,
+          jurisdicciones: 0,
+          cuadrantes: 0,
+          camaras: 0
+        },
+        childrenMap: new Map()
+      });
+    }
+
+    return departmentMap.get(key);
+  }
+
+  function ensureDependency(departmentNode, name) {
+    const key = String(name || "SIN DEPENDENCIA").trim();
+
+    if (!departmentNode.childrenMap.has(key)) {
+      departmentNode.childrenMap.set(key, {
+        id: `dependency:${departmentNode.name}:${key}`,
+        type: "dependency",
+        name: key,
+        counts: {
+          jurisdicciones: 0,
+          cuadrantes: 0,
+          camaras: 0
+        },
+        childrenMap: new Map(),
+        cameraChildren: []
+      });
+    }
+
+    return departmentNode.childrenMap.get(key);
+  }
+
+  function ensureJurisdiction(dependencyNode, name) {
+    const key = String(name || dependencyNode.name || "SIN JURISDICCION").trim();
+
+    if (!dependencyNode.childrenMap.has(key)) {
+      dependencyNode.childrenMap.set(key, {
+        id: `jurisdiction:${dependencyNode.id}:${key}`,
+        type: "jurisdiction",
+        name: key,
+        counts: {
+          cuadrantes: 0,
+          camaras: 0
+        },
+        quadrantChildren: [],
+        cameraChildren: []
+      });
+    }
+
+    return dependencyNode.childrenMap.get(key);
+  }
+
+  function pushUniqueById(list, item) {
+    if (!list.some((entry) => entry.id === item.id)) {
+      list.push(item);
+    }
+  }
+
+  for (const row of rows) {
+    const layerCode = row.layer_code;
+    const featureName = row.name || row.code || row.id;
+    const departmentName = row.department_name || "SIN DEPARTAMENTAL";
+    const dependencyName =
+      row.dependency_name ||
+      row.jurisdiction_name ||
+      "SIN DEPENDENCIA";
+    const jurisdictionName =
+      row.jurisdiction_name ||
+      row.dependency_name ||
+      dependencyName;
+
+    const departmentNode = ensureDepartment(departmentName);
+    const dependencyNode = ensureDependency(departmentNode, dependencyName);
+
+    if (layerCode === "dependencias") {
+      departmentNode.counts.dependencias += 1;
+    }
+
+    if (layerCode === "jurisdicciones") {
+      const jurisdictionNode = ensureJurisdiction(
+        dependencyNode,
+        jurisdictionName
+      );
+
+      departmentNode.counts.jurisdicciones += 1;
+      dependencyNode.counts.jurisdicciones += 1;
+
+      jurisdictionNode.feature = {
+        id: row.id,
+        layerCode,
+        name: featureName,
+        code: row.code,
+        featureType: row.feature_type
+      };
+
+      continue;
+    }
+
+    if (layerCode === "cuadrantes") {
+      const jurisdictionNode = ensureJurisdiction(
+        dependencyNode,
+        jurisdictionName
+      );
+
+      const quadrantItem = {
+        id: `quadrant:${row.id}`,
+        type: "quadrant",
+        name: featureName,
+        feature: {
+          id: row.id,
+          layerCode,
+          name: featureName,
+          code: row.code,
+          featureType: row.feature_type
+        }
+      };
+
+      departmentNode.counts.cuadrantes += 1;
+      dependencyNode.counts.cuadrantes += 1;
+      jurisdictionNode.counts.cuadrantes += 1;
+
+      pushUniqueById(jurisdictionNode.quadrantChildren, quadrantItem);
+      continue;
+    }
+
+    if (layerCode === "camaras") {
+      const jurisdictionNode = ensureJurisdiction(
+        dependencyNode,
+        jurisdictionName
+      );
+
+      const cameraItem = {
+        id: `camera:${row.id}`,
+        type: "camera",
+        name: featureName,
+        feature: {
+          id: row.id,
+          layerCode,
+          name: featureName,
+          code: row.code,
+          featureType: row.feature_type
+        }
+      };
+
+      departmentNode.counts.camaras += 1;
+      dependencyNode.counts.camaras += 1;
+      jurisdictionNode.counts.camaras += 1;
+
+      pushUniqueById(jurisdictionNode.cameraChildren, cameraItem);
+      continue;
+    }
+
+    if (layerCode === "departamentales") {
+      departmentNode.feature = {
+        id: row.id,
+        layerCode,
+        name: featureName,
+        code: row.code,
+        featureType: row.feature_type
+      };
+    }
+  }
+
+  const tree = [...departmentMap.values()].map((departmentNode) => {
+    const dependencies = [...departmentNode.childrenMap.values()].map(
+      (dependencyNode) => {
+        const jurisdictions = [...dependencyNode.childrenMap.values()].map(
+          (jurisdictionNode) => ({
+            id: jurisdictionNode.id,
+            type: jurisdictionNode.type,
+            name: jurisdictionNode.name,
+            counts: jurisdictionNode.counts,
+            feature: jurisdictionNode.feature || null,
+            children: [
+              ...jurisdictionNode.quadrantChildren,
+              ...jurisdictionNode.cameraChildren
+            ].sort((a, b) => String(a.name).localeCompare(String(b.name)))
+          })
+        );
+
+        return {
+          id: dependencyNode.id,
+          type: dependencyNode.type,
+          name: dependencyNode.name,
+          counts: dependencyNode.counts,
+          feature: dependencyNode.feature || null,
+          children: jurisdictions.sort((a, b) =>
+            String(a.name).localeCompare(String(b.name))
+          )
+        };
+      }
+    );
+
+    return {
+      id: departmentNode.id,
+      type: departmentNode.type,
+      name: departmentNode.name,
+      counts: departmentNode.counts,
+      feature: departmentNode.feature || null,
+      children: dependencies.sort((a, b) =>
+        String(a.name).localeCompare(String(b.name))
+      )
+    };
+  });
+
+  return tree.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
 export async function getHealth() {
   const result = await pool.query(`
     SELECT

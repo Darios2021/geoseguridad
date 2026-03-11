@@ -4,7 +4,12 @@ import {
   importKmzToDatabase,
   previewKmzImport
 } from "../services/geo-import.service.js";
-import { getFeatures, getHealth, getLayers } from "../services/geo.service.js";
+import {
+  getFeatures,
+  getGeoTree,
+  getHealth,
+  getLayers
+} from "../services/geo.service.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -39,6 +44,18 @@ export const listFeatures = asyncHandler(async (req, res) => {
     type: "FeatureCollection",
     count: data.length,
     features: data
+  });
+});
+
+export const geoTree = asyncHandler(async (req, res) => {
+  const data = await getGeoTree({
+    status: req.query.status
+  });
+
+  return res.json({
+    ok: true,
+    count: data.length,
+    data
   });
 });
 
