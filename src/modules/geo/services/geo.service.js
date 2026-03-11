@@ -72,80 +72,6 @@ export async function getFeatures(filters = {}) {
   }));
 }
 
-import { pool } from "../../../config/db.js";
-import { GEO_QUERIES } from "../queries/geo.queries.js";
-
-export async function getLayers() {
-  const result = await pool.query(GEO_QUERIES.layers);
-  return result.rows;
-}
-
-export async function getFeatures(filters = {}) {
-  const values = [];
-  let where = "";
-  let idx = 1;
-
-  if (filters.layer) {
-    where += ` AND l.code = $${idx++}`;
-    values.push(filters.layer);
-  }
-
-  if (filters.department) {
-    where += ` AND f.department_name = $${idx++}`;
-    values.push(filters.department);
-  }
-
-  if (filters.dependency) {
-    where += ` AND f.dependency_name = $${idx++}`;
-    values.push(filters.dependency);
-  }
-
-  if (filters.status) {
-    where += ` AND f.status = $${idx++}`;
-    values.push(filters.status);
-  }
-
-  const limit = Math.min(Number(filters.limit || 1000), 5000);
-  values.push(limit);
-
-  const sql = `
-    ${GEO_QUERIES.featuresBase}
-    ${where}
-    ORDER BY f.name ASC
-    LIMIT $${idx}
-  `;
-
-  const result = await pool.query(sql, values);
-
-  return result.rows.map((row) => ({
-    type: "Feature",
-    id: row.id,
-    geometry: row.geometry,
-    properties: {
-      id: row.id,
-      layer_id: row.layer_id,
-      layer_code: row.layer_code,
-      layer_name: row.layer_name,
-      code: row.code,
-      name: row.name,
-      description: row.description,
-      feature_type: row.feature_type,
-      status: row.status,
-      priority: row.priority,
-      department_name: row.department_name,
-      dependency_name: row.dependency_name,
-      jurisdiction_name: row.jurisdiction_name,
-      source_type: row.source_type,
-      source_reference: row.source_reference,
-      external_id: row.external_id,
-      is_active: row.is_active,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-      ...(row.properties || {})
-    }
-  }));
-}
-
 export async function getGeoTree(filters = {}) {
   const values = [];
   let where = "";
@@ -179,7 +105,6 @@ export async function getGeoTree(filters = {}) {
   `;
 
   const { rows } = await pool.query(sql, values);
-
   const departments = new Map();
 
   function makeFeature(row, fallbackName) {
@@ -217,48 +142,25 @@ export async function getGeoTree(filters = {}) {
         type: "dependency",
         name: key,
         feature: null,
-        jurisdictionMap: new Map()
+        jurisdictionNode: null,
+        quadrantGroup: {
+          id: `dependency:${departmentNode.name}:${key}:group:cuadrantes`,
+          type: "group",
+          name: "Cuadrantes",
+          groupKind: "cuadrantes",
+          children: []
+        },
+        cameraGroup: {
+          id: `dependency:${departmentNode.name}:${key}:group:camaras`,
+          type: "group",
+          name: "Cámaras",
+          groupKind: "camaras",
+          children: []
+        }
       });
     }
 
     return departmentNode.dependencyMap.get(key);
-  }
-
-  function ensureJurisdiction(dependencyNode, rawName) {
-    const raw = String(rawName || "").trim();
-    const key = raw || "JURISDICCIÓN";
-
-    if (!dependencyNode.jurisdictionMap.has(key)) {
-      const displayName =
-        !raw || raw === dependencyNode.name ? "Jurisdicción" : raw;
-
-      dependencyNode.jurisdictionMap.set(key, {
-        id: `jurisdiction:${dependencyNode.id}:${key}`,
-        type: "jurisdiction",
-        name: displayName,
-        feature: null,
-        groupsMap: new Map()
-      });
-    }
-
-    return dependencyNode.jurisdictionMap.get(key);
-  }
-
-  function ensureGroup(jurisdictionNode, groupKind) {
-    const key = groupKind;
-    const groupName = groupKind === "camaras" ? "Cámaras" : "Cuadrantes";
-
-    if (!jurisdictionNode.groupsMap.has(key)) {
-      jurisdictionNode.groupsMap.set(key, {
-        id: `${jurisdictionNode.id}:group:${key}`,
-        type: "group",
-        name: groupName,
-        groupKind,
-        children: []
-      });
-    }
-
-    return jurisdictionNode.groupsMap.get(key);
   }
 
   for (const row of rows) {
@@ -266,8 +168,6 @@ export async function getGeoTree(filters = {}) {
     const departmentName = row.department_name || "SIN DEPARTAMENTAL";
     const dependencyName =
       row.dependency_name || row.jurisdiction_name || "SIN DEPENDENCIA";
-    const jurisdictionName =
-      row.jurisdiction_name || dependencyName || "JURISDICCIÓN";
 
     const departmentNode = ensureDepartment(departmentName);
     const dependencyNode = ensureDependency(departmentNode, dependencyName);
@@ -282,19 +182,27 @@ export async function getGeoTree(filters = {}) {
       continue;
     }
 
-    const jurisdictionNode = ensureJurisdiction(
-      dependencyNode,
-      jurisdictionName
-    );
-
     if (layerCode === "jurisdicciones") {
-      jurisdictionNode.feature = makeFeature(row, jurisdictionNode.name);
+      const rawJurisdictionName = String(
+        row.jurisdiction_name || row.name || "Jurisdicción"
+      ).trim();
+
+      const jurisdictionDisplayName =
+        !rawJurisdictionName || rawJurisdictionName === dependencyNode.name
+          ? "Jurisdicción"
+          : rawJurisdictionName;
+
+      dependencyNode.jurisdictionNode = {
+        id: `jurisdiction:${dependencyNode.id}`,
+        type: "jurisdiction",
+        name: jurisdictionDisplayName,
+        feature: makeFeature(row, jurisdictionDisplayName)
+      };
       continue;
     }
 
     if (layerCode === "cuadrantes") {
-      const groupNode = ensureGroup(jurisdictionNode, "cuadrantes");
-      groupNode.children.push({
+      dependencyNode.quadrantGroup.children.push({
         id: `quadrant:${row.id}`,
         type: "quadrant",
         name: row.name,
@@ -304,8 +212,7 @@ export async function getGeoTree(filters = {}) {
     }
 
     if (layerCode === "camaras") {
-      const groupNode = ensureGroup(jurisdictionNode, "camaras");
-      groupNode.children.push({
+      dependencyNode.cameraGroup.children.push({
         id: `camera:${row.id}`,
         type: "camera",
         name: row.name,
@@ -317,38 +224,32 @@ export async function getGeoTree(filters = {}) {
   const tree = [...departments.values()].map((departmentNode) => {
     const dependencies = [...departmentNode.dependencyMap.values()].map(
       (dependencyNode) => {
-        const jurisdictions = [...dependencyNode.jurisdictionMap.values()].map(
-          (jurisdictionNode) => {
-            const groups = [...jurisdictionNode.groupsMap.values()]
-              .map((groupNode) => ({
-                id: groupNode.id,
-                type: groupNode.type,
-                name: groupNode.name,
-                groupKind: groupNode.groupKind,
-                children: [...groupNode.children].sort((a, b) =>
-                  String(a.name).localeCompare(String(b.name))
-                )
-              }))
-              .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+        const children = [];
 
-            return {
-              id: jurisdictionNode.id,
-              type: jurisdictionNode.type,
-              name: jurisdictionNode.name,
-              feature: jurisdictionNode.feature || null,
-              children: groups
-            };
-          }
-        );
+        if (dependencyNode.jurisdictionNode) {
+          children.push(dependencyNode.jurisdictionNode);
+        }
+
+        if (dependencyNode.quadrantGroup.children.length) {
+          dependencyNode.quadrantGroup.children.sort((a, b) =>
+            String(a.name).localeCompare(String(b.name))
+          );
+          children.push(dependencyNode.quadrantGroup);
+        }
+
+        if (dependencyNode.cameraGroup.children.length) {
+          dependencyNode.cameraGroup.children.sort((a, b) =>
+            String(a.name).localeCompare(String(b.name))
+          );
+          children.push(dependencyNode.cameraGroup);
+        }
 
         return {
           id: dependencyNode.id,
           type: dependencyNode.type,
           name: dependencyNode.name,
           feature: dependencyNode.feature || null,
-          children: jurisdictions.sort((a, b) =>
-            String(a.name).localeCompare(String(b.name))
-          )
+          children
         };
       }
     );
@@ -365,17 +266,6 @@ export async function getGeoTree(filters = {}) {
   });
 
   return tree.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-}
-
-export async function getHealth() {
-  const result = await pool.query(`
-    SELECT
-      current_database() AS database,
-      current_user AS user_name,
-      PostGIS_Version() AS postgis_version,
-      NOW() AS server_time
-  `);
-  return result.rows[0];
 }
 
 export async function getHealth() {
