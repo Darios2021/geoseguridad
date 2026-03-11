@@ -523,8 +523,12 @@ function buildStructuralTree(structuralRows, cameraRows) {
         name: row.name,
         feature: makeFeature(row, row.name)
       });
-      continue;
     }
+  }
+
+  const existingDepartmentMap = new Map();
+  for (const [departmentKey, departmentNode] of departments.entries()) {
+    existingDepartmentMap.set(departmentKey, departmentNode);
   }
 
   for (const row of cameraRows) {
@@ -536,8 +540,17 @@ function buildStructuralTree(structuralRows, cameraRows) {
       continue;
     }
 
-    const departmentNode = ensureDepartment(departmentName);
-    const dependencyNode = ensureDependency(departmentNode, dependencyName);
+    const departmentNode = existingDepartmentMap.get(String(departmentName).trim());
+    if (!departmentNode) {
+      continue;
+    }
+
+    const dependencyNode = departmentNode.dependencyMap.get(
+      String(dependencyName).trim()
+    );
+    if (!dependencyNode) {
+      continue;
+    }
 
     if (
       row.jurisdiction_name &&
