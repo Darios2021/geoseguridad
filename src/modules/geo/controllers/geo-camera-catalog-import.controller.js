@@ -1,8 +1,8 @@
 import multer from "multer";
 import { asyncHandler } from "../../../utils/asyncHandler.js";
 import {
-  importCameraCatalogToDatabase,
-  previewCameraCatalogImport
+  previewCameraCatalogImport,
+  importCameraCatalogToDatabase
 } from "../services/geo-camera-catalog-import.service.js";
 
 const upload = multer({
@@ -15,6 +15,14 @@ const upload = multer({
 export const importCameraCatalogMiddleware = upload.single("file");
 
 export const previewCameraCatalog = asyncHandler(async (req, res) => {
+  console.log("CSV PREVIEW req.file:", {
+    exists: !!req.file,
+    fieldname: req.file?.fieldname,
+    originalname: req.file?.originalname,
+    mimetype: req.file?.mimetype,
+    size: req.file?.size
+  });
+
   if (!req.file) {
     return res.status(400).json({
       ok: false,
@@ -31,6 +39,14 @@ export const previewCameraCatalog = asyncHandler(async (req, res) => {
 });
 
 export const importCameraCatalog = asyncHandler(async (req, res) => {
+  console.log("CSV IMPORT req.file:", {
+    exists: !!req.file,
+    fieldname: req.file?.fieldname,
+    originalname: req.file?.originalname,
+    mimetype: req.file?.mimetype,
+    size: req.file?.size
+  });
+
   if (!req.file) {
     return res.status(400).json({
       ok: false,

@@ -395,6 +395,12 @@ export async function previewCameraCatalogImport({
   buffer,
   filename = "camaras.csv"
 }) {
+  console.log("previewCameraCatalogImport:", {
+    hasBuffer: !!buffer,
+    isBuffer: Buffer.isBuffer(buffer),
+    filename
+  });
+
   const { detectedFormat, delimiter, records, summary, preview } =
     prepareCameraCatalogImport(buffer);
 
@@ -421,6 +427,13 @@ export async function importCameraCatalogToDatabase({
   filename = "camaras.csv",
   replaceExisting = true
 }) {
+  console.log("importCameraCatalogToDatabase:", {
+    hasBuffer: !!buffer,
+    isBuffer: Buffer.isBuffer(buffer),
+    filename,
+    replaceExisting
+  });
+
   const { detectedFormat, delimiter, records, summary } =
     prepareCameraCatalogImport(buffer);
 
