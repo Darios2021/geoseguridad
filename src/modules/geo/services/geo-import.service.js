@@ -174,12 +174,13 @@ function polygonGeometryFromPlacemark(placemark) {
   if (outerCoords.length < 4) return null;
 
   const rings = [outerCoords];
-
   const innerBoundaries = asArray(placemark?.Polygon?.innerBoundaryIs);
 
   for (const inner of innerBoundaries) {
     const innerCoords = ensureClosedRing(
-      parseCoordinatesList(textValue(inner?.LinearRing?.coordinates || inner?.coordinates))
+      parseCoordinatesList(
+        textValue(inner?.LinearRing?.coordinates || inner?.coordinates)
+      )
     );
     if (innerCoords.length >= 4) {
       rings.push(innerCoords);
@@ -217,9 +218,37 @@ function folderNameLooksLikeCameras(name) {
   return /camaras?/i.test(name || "");
 }
 
+function looksLikeFileName(name) {
+  const clean = normalizeWhitespace(name || "");
+  return /\.(KML|KMZ)$/i.test(clean);
+}
+
+function looksLikeContainerFolder(name) {
+  const clean = normalizeWhitespace(name || "").toUpperCase();
+
+  if (!clean) return false;
+  if (looksLikeFileName(clean)) return true;
+
+  return (
+    /\bCUADRANTE(S)?\b/i.test(clean) ||
+    /\bCAMARA(S)?\b/i.test(clean) ||
+    /\bJURISDICCION(ES)?\b/i.test(clean) ||
+    /\bOPERATIVO\b/i.test(clean) ||
+    /\bACTUALIZADO(S)?\b/i.test(clean) ||
+    /\bAGOSTO\b|\bSEPTIEMBRE\b|\bOCTUBRE\b|\bNOVIEMBRE\b|\bDICIEMBRE\b|\bENERO\b|\bFEBRERO\b|\bMARZO\b|\bABRIL\b|\bMAYO\b|\bJUNIO\b|\bJULIO\b/i.test(
+      clean
+    )
+  );
+}
+
 function folderNameLooksLikeDependency(name) {
-  return /(comisaria|comisaría|cria|cría|sub\s*comisaria|sub\s*comisaría|sub\s*cria|sub\s*cría|seccional|unidad|dependencia|brigada|departamento)/i.test(
-    name || ""
+  const clean = normalizeWhitespace(name || "").toUpperCase();
+
+  if (!clean) return false;
+  if (looksLikeContainerFolder(clean)) return false;
+
+  return /\b(COMISARIA|COMISARÍA|CRIA|CRÍA|SUB\s*COMISARIA|SUB\s*COMISARÍA|SUB\s*CRIA|SUB\s*CRÍA|SECCIONAL|UNIDAD|DEPENDENCIA|BRIGADA)\b/i.test(
+    clean
   );
 }
 
@@ -252,14 +281,25 @@ function extractContext(folderPath) {
   let departmentName = null;
   let dependencyName = null;
 
-  for (const part of folderPath) {
+  const normalizedPath = folderPath
+    .map((part) => normalizeName(part))
+    .filter(Boolean);
+
+  for (const part of normalizedPath) {
     if (!departmentName && folderNameLooksLikeDepartment(part)) {
       departmentName = normalizeDepartmentName(part);
-      continue;
     }
+  }
 
-    if (!dependencyName && folderNameLooksLikeDependency(part)) {
+  for (let i = normalizedPath.length - 1; i >= 0; i -= 1) {
+    const part = normalizedPath[i];
+
+    if (!part) continue;
+    if (looksLikeContainerFolder(part)) continue;
+
+    if (folderNameLooksLikeDependency(part)) {
       dependencyName = normalizeDependencyName(part);
+      break;
     }
   }
 
@@ -377,7 +417,7 @@ function buildFeatureFromPlacemark(placemark, folderPath, profile) {
 
     const inferredDependency = inferQuadrantDependencyName(name);
     dependencyName = dependencyName || inferredDependency || null;
-    jurisdictionName = dependencyName || null;
+    jurisdictionName = null;
   }
 
   if (layerCode === "jurisdicciones") {
