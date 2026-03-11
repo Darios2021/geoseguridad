@@ -419,7 +419,7 @@ async function getTreeCameraRows(filters = {}) {
   });
 }
 
-function buildStructuralTree(structuralRows) {
+function buildStructuralTree(structuralRows, cameraRows) {
   const departments = new Map();
 
   function makeFeature(row, fallbackName) {
@@ -463,6 +463,13 @@ function buildStructuralTree(structuralRows) {
           type: "group",
           name: "Cuadrantes",
           groupKind: "cuadrantes",
+          children: []
+        },
+        cameraGroup: {
+          id: `dependency:${departmentNode.name}:${key}:group:camaras`,
+          type: "group",
+          name: "Cámaras",
+          groupKind: "camaras",
           children: []
         }
       });
@@ -516,7 +523,66 @@ function buildStructuralTree(structuralRows) {
         name: row.name,
         feature: makeFeature(row, row.name)
       });
+      continue;
     }
+  }
+
+  for (const row of cameraRows) {
+    const departmentName = row.department_name || null;
+    const dependencyName =
+      row.dependency_name || row.jurisdiction_name || null;
+
+    if (!departmentName || !dependencyName) {
+      continue;
+    }
+
+    const departmentNode = ensureDepartment(departmentName);
+    const dependencyNode = ensureDependency(departmentNode, dependencyName);
+
+    if (
+      row.jurisdiction_name &&
+      row.jurisdiction_name !== "SIN JURISDICCIÓN" &&
+      !dependencyNode.jurisdictionNode
+    ) {
+      dependencyNode.jurisdictionNode = {
+        id: `jurisdiction:virtual:${dependencyNode.id}:${row.jurisdiction_name}`,
+        type: "jurisdiction",
+        name: row.jurisdiction_name,
+        feature: null
+      };
+    }
+
+    if (row.quadrant_name) {
+      const existsQuadrant = dependencyNode.quadrantGroup.children.some(
+        (item) =>
+          String(item.name || "").trim().toUpperCase() ===
+          String(row.quadrant_name || "").trim().toUpperCase()
+      );
+
+      if (!existsQuadrant) {
+        dependencyNode.quadrantGroup.children.push({
+          id: `quadrant:virtual:${dependencyNode.id}:${row.quadrant_code || row.quadrant_name}`,
+          type: "quadrant",
+          name: row.quadrant_name,
+          feature: row.quadrant_code
+            ? {
+                id: `virtual-quadrant-${row.quadrant_code}`,
+                layerCode: "cuadrantes",
+                name: row.quadrant_name,
+                code: row.quadrant_code,
+                featureType: "quadrant"
+              }
+            : null
+        });
+      }
+    }
+
+    dependencyNode.cameraGroup.children.push({
+      id: `camera:${row.id}`,
+      type: "camera",
+      name: row.name || row.code || "Cámara",
+      feature: makeFeature(row, row.name || row.code || "Cámara")
+    });
   }
 
   const tree = [...departments.values()].map((departmentNode) => {
@@ -533,6 +599,13 @@ function buildStructuralTree(structuralRows) {
             String(a.name).localeCompare(String(b.name))
           );
           children.push(dependencyNode.quadrantGroup);
+        }
+
+        if (dependencyNode.cameraGroup.children.length) {
+          dependencyNode.cameraGroup.children.sort((a, b) =>
+            String(a.name).localeCompare(String(b.name))
+          );
+          children.push(dependencyNode.cameraGroup);
         }
 
         return {
@@ -619,7 +692,7 @@ export async function getGeoTree(filters = {}) {
     getTreeCameraRows(filters)
   ]);
 
-  const structuralTree = buildStructuralTree(structuralRows);
+  const structuralTree = buildStructuralTree(structuralRows, cameraRows);
   const cameraRoot = buildCameraCatalogTree(cameraRows);
 
   return cameraRoot ? [...structuralTree, cameraRoot] : structuralTree;
