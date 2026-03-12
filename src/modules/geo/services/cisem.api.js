@@ -1,3 +1,4 @@
+import fetch from "node-fetch";
 const DEFAULT_INCLUDE = ["id_departamento.id_cuadrante", "id_estado"];
 
 function getConfig() {
@@ -55,13 +56,17 @@ async function fetchCisemCameras(params = {}) {
     fields: params.fields ?? undefined
   });
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "x-api-key": apiKey
-    }
-  });
+console.log("CISEM REQUEST:", url);
+
+const response = await fetch(url, {
+  method: "GET",
+  headers: {
+    Accept: "application/json",
+    "x-api-key": apiKey
+  }
+});
+
+console.log("CISEM STATUS:", response.status);
 
   const text = await response.text();
 
