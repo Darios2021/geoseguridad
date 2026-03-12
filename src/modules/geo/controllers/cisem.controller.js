@@ -74,8 +74,11 @@ export async function getAllCisemCameras(req, res, next) {
   }
 }
 
-export async function getCisemCamerasGeoJson(req, res, next) {
+export async function getCisemCamerasGeoJson(req, res) {
   try {
+
+    console.log("Cargando cámaras CISem...");
+
     const limit = parseNumberParam(req.query.limit, 500);
     const sort = req.query.sort === "desc" ? "desc" : "asc";
     const include = parseCsvParam(req.query.include, [
@@ -91,8 +94,18 @@ export async function getCisemCamerasGeoJson(req, res, next) {
       fields
     });
 
+    console.log("Cámaras CISem cargadas:", featureCollection.features.length);
+
     res.json(featureCollection);
+
   } catch (error) {
-    next(error);
+
+    console.error("ERROR CISem:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message || "Error consultando CISem"
+    });
+
   }
 }
