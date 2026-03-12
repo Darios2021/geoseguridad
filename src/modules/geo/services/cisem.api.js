@@ -1,6 +1,7 @@
 import fetch from "node-fetch";
 
 const DEFAULT_INCLUDE = ["id_departamento.id_cuadrante", "id_estado"];
+const MAX_PAGE_SIZE = 200;
 
 function getConfig() {
   const base = String(process.env.CISEM_API_BASE || "")
@@ -42,9 +43,11 @@ function buildUrl(path, params = {}) {
 async function fetchCisemCameras(params = {}) {
   const { apiKey } = getConfig();
 
+  const safeLimit = Math.min(Number(params.limit || MAX_PAGE_SIZE), MAX_PAGE_SIZE);
+
   const url = buildUrl("/api/v1/cisem/camaras", {
     page: params.page ?? 1,
-    limit: params.limit ?? 500,
+    limit: safeLimit,
     sort: params.sort ?? "asc",
     include: params.include ?? DEFAULT_INCLUDE,
     fields: params.fields ?? undefined
@@ -55,7 +58,6 @@ async function fetchCisemCameras(params = {}) {
   let response;
 
   try {
-
     response = await fetch(url, {
       method: "GET",
       headers: {
@@ -63,12 +65,9 @@ async function fetchCisemCameras(params = {}) {
         "x-api-key": apiKey
       }
     });
-
   } catch (err) {
-
     console.error("Error conectando a CISem:", err);
     throw new Error("No se pudo conectar con CISem");
-
   }
 
   console.log("CISEM STATUS:", response.status);
@@ -86,7 +85,6 @@ async function fetchCisemCameras(params = {}) {
   }
 
   if (!response.ok) {
-
     const detail = json ? JSON.stringify(json) : text;
 
     throw new Error(
@@ -94,15 +92,13 @@ async function fetchCisemCameras(params = {}) {
         detail ? ` - ${detail}` : ""
       }`
     );
-
   }
 
   return json || {};
 }
 
 async function fetchAllCisemCameras(params = {}) {
-
-  const pageSize = Math.min(Number(params.limit || 500), 1000);
+  const pageSize = Math.min(Number(params.limit || MAX_PAGE_SIZE), MAX_PAGE_SIZE);
 
   const firstPage = await fetchCisemCameras({
     page: 1,
@@ -152,7 +148,6 @@ function toNumber(value) {
 }
 
 function normalizeTipo(tipo) {
-
   const raw = String(tipo || "").trim().toLowerCase();
 
   if (!raw) return "camera";
@@ -164,7 +159,6 @@ function normalizeTipo(tipo) {
 }
 
 function normalizeEstadoNombre(estado) {
-
   if (!estado) return "Sin estado";
 
   if (typeof estado === "number") {
@@ -175,14 +169,12 @@ function normalizeEstadoNombre(estado) {
 }
 
 function normalizeEstadoColor(estado) {
-
   if (!estado || typeof estado === "number") return null;
 
   return String(estado.color_hex || "").trim() || null;
 }
 
 function cameraRecordToFeature(camera) {
-
   const lat = toNumber(camera.latitud);
   const lng = toNumber(camera.longitud);
 
@@ -242,7 +234,6 @@ function cameraRecordToFeature(camera) {
 }
 
 async function fetchCisemCamerasAsFeatureCollection(params = {}) {
-
   const records = await fetchAllCisemCameras(params);
 
   const features = records
