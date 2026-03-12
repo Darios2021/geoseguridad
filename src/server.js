@@ -6,11 +6,11 @@ async function bootstrap() {
   try {
     const dbInfo = await testDbConnection();
     console.log("‚úÖ DB conectada");
-    console.log("Ìµí DB time:", dbInfo.now);
-    console.log("Ì∑ÑÔ∏è Version:", dbInfo.version.split("\n")[0]);
+    console.log("DB time:", dbInfo.now);
+    console.log("DB version:", dbInfo.version.split("\n")[0]);
 
     app.listen(env.port, () => {
-      console.log(`Ì∫Ä GeoSeguridad backend corriendo en http://localhost:${env.port}`);
+      console.log(`GeoSeguridad backend corriendo en http://localhost:${env.port}`);
     });
   } catch (error) {
     console.error("‚ùå No se pudo iniciar el backend:", error.message);
