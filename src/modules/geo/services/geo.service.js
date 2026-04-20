@@ -741,16 +741,52 @@ function buildCameraCatalogTree(cameraRows) {
   };
 }
 
+async function getPoliticalDepartmentsRoot() {
+  const { rows } = await pool.query(`
+    SELECT f.id, f.code, f.name, f.feature_type
+    FROM geo_features f
+    INNER JOIN geo_layers l ON l.id = f.layer_id
+    WHERE f.is_active = TRUE AND l.code = 'departamentos'
+    ORDER BY f.name ASC
+  `);
+
+  if (!rows.length) return null;
+
+  return {
+    id: "group:departamentos-root",
+    type: "group",
+    name: "Departamentos políticos",
+    groupKind: "departamentos",
+    children: rows.map((row) => ({
+      id: `departamento:${row.id}`,
+      type: "department",
+      name: row.name,
+      feature: {
+        id: row.id,
+        layerCode: "departamentos",
+        name: row.name,
+        code: row.code,
+        featureType: row.feature_type
+      }
+    }))
+  };
+}
+
 export async function getGeoTree(filters = {}) {
-  const [structuralRows, cameraRows] = await Promise.all([
+  const [structuralRows, cameraRows, politicalRoot] = await Promise.all([
     getTreeStructuralRows(filters),
-    getTreeCameraRows(filters)
+    getTreeCameraRows(filters),
+    getPoliticalDepartmentsRoot()
   ]);
 
   const structuralTree = buildStructuralTree(structuralRows, cameraRows);
   const cameraRoot = buildCameraCatalogTree(cameraRows);
 
-  return cameraRoot ? [...structuralTree, cameraRoot] : structuralTree;
+  const extras = [];
+  if (politicalRoot) extras.push(politicalRoot);
+  if (cameraRoot) extras.push(cameraRoot);
+
+  return [...structuralTree, ...extras];
 }
 
 export async function getHealth() {
