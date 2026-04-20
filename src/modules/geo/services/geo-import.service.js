@@ -322,6 +322,10 @@ function extractContext(folderPath) {
 function autoDetectImportProfile(filename = "") {
   const clean = normalizeWhitespace(filename).toLowerCase();
 
+  if (/departamento(s|_)/.test(clean)) {
+    return "departamentos";
+  }
+
   if (/cuadrante|departamental/.test(clean)) {
     return "departamentales_cuadrantes";
   }
@@ -336,6 +340,13 @@ function autoDetectImportProfile(filename = "") {
 function detectLayerCode({ profile, geometry, folderPath, placemarkName }) {
   const joinedPath = folderPath.join(" / ");
   const cleanName = normalizeWhitespace(placemarkName || "");
+
+  if (profile === "departamentos") {
+    if (geometry?.type !== "Polygon" && geometry?.type !== "MultiPolygon") {
+      return null;
+    }
+    return "departamentos";
+  }
 
   if (profile === "departamentales_cuadrantes") {
     if (geometry?.type !== "Polygon") return null;
@@ -379,7 +390,9 @@ function buildWarnings(feature) {
   if (!feature.layerCode) warnings.push("Sin layerCode detectado");
   if (!feature.featureType) warnings.push("Sin featureType detectado");
   if (!feature.geometry?.type) warnings.push("Sin geometría");
-  if (!feature.departmentName) warnings.push("Sin departamental");
+  if (!feature.departmentName && feature.layerCode !== "departamentos") {
+    warnings.push("Sin departamental");
+  }
 
   if (
     ["camaras", "dependencias", "jurisdicciones", "cuadrantes"].includes(
@@ -415,7 +428,8 @@ function buildFeatureFromPlacemark(placemark, folderPath, profile) {
     dependencias: "dependency",
     jurisdicciones: "jurisdiction",
     cuadrantes: "quadrant",
-    departamentales: "departmental"
+    departamentales: "departmental",
+    departamentos: "departamento"
   };
 
   let name = rawName;
@@ -426,6 +440,13 @@ function buildFeatureFromPlacemark(placemark, folderPath, profile) {
   if (layerCode === "departamentales") {
     name = normalizeDepartmentName(rawName) || departmentName || rawName;
     departmentName = normalizeDepartmentName(rawName) || departmentName;
+  }
+
+  if (layerCode === "departamentos") {
+    name = normalizeWhitespace(rawName).toUpperCase();
+    departmentName = name;
+    dependencyName = null;
+    jurisdictionName = null;
   }
 
   if (layerCode === "cuadrantes") {
@@ -646,6 +667,7 @@ function summarizeFeatures(features) {
       if (feature.layerCode === "jurisdicciones") acc.jurisdicciones += 1;
       if (feature.layerCode === "cuadrantes") acc.cuadrantes += 1;
       if (feature.layerCode === "departamentales") acc.departamentales += 1;
+      if (feature.layerCode === "departamentos") acc.departamentos += 1;
       return acc;
     },
     {
@@ -654,7 +676,8 @@ function summarizeFeatures(features) {
       dependencias: 0,
       jurisdicciones: 0,
       cuadrantes: 0,
-      departamentales: 0
+      departamentales: 0,
+      departamentos: 0
     }
   );
 }
@@ -704,6 +727,7 @@ function buildPreviewRows(features, limit = 200) {
 async function getLayerIds(client) {
   const requiredCodes = [
     "departamentales",
+    "departamentos",
     "cuadrantes",
     "jurisdicciones",
     "dependencias",
