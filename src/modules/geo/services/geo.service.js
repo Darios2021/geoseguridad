@@ -404,7 +404,7 @@ async function getTreeStructuralRows(filters = {}) {
     FROM geo_features f
     INNER JOIN geo_layers l ON l.id = f.layer_id
     WHERE f.is_active = TRUE
-      AND l.code <> 'camaras'
+      AND l.code NOT IN ('camaras', 'departamentos')
       ${where}
     ORDER BY
       COALESCE(f.department_name, 'ZZZ') ASC,
